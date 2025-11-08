@@ -1,148 +1,151 @@
 <!DOCTYPE html>
 <html lang="id">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Hasil Formulir</title>
-    <style>
-        *, *:before, *:after {
-            -moz-box-sizing: border-box;
-            -webkit-box-sizing: border-box;
-            box-sizing: border-box;
-        }
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Hasil Formulir Pendaftaran</title>
 
-        body {
-            font-family: Arial, sans-serif;
-            background-color: #90D26D;
-            margin: 0;
-            padding: 0;
-        }
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
 
-        .container {
-            max-width: 900px;
-            margin: 20px auto;
-            padding: 20px;
-            background-color: #ffffff;
-            border-radius: 8px;
-            box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
-        }
+    body {
+      font-family: "Poppins", sans-serif;
+      background: linear-gradient(180deg, #e7f3fa 0%, #b8e0d2 100%);
+      color: #333;
+      min-height: 100vh;
+      padding: 30px 15px;
+      display: flex;
+      justify-content: center;
+      align-items: flex-start;
+    }
 
-        h1 {
-            text-align: center;
-            margin: 0;
-            padding: 20px 0;
-            color: #333;
-        }
+    .container {
+      background: #ffffff;
+      border-radius: 16px;
+      box-shadow: 0 8px 25px rgba(0, 0, 0, 0.1);
+      max-width: 900px;
+      width: 100%;
+      padding: 35px;
+      border-top: 6px solid #68a7d9;
+      animation: fadeIn 0.5s ease;
+    }
 
-        table {
-            width: 100%;
-            margin: 20px 0;
-            border-collapse: collapse;
-        }
+    h1 {
+      text-align: center;
+      color: #023e8a;
+      margin-bottom: 25px;
+      font-size: 1.9rem;
+    }
 
-        table, th, td {
-            border: 1px solid #ddd;
-        }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-bottom: 25px;
+    }
 
-        th, td {
-            padding: 10px;
-            text-align: left;
-        }
+    th, td {
+      border: 1px solid #d9e6f2;
+      padding: 12px 14px;
+      text-align: left;
+      font-size: 0.95rem;
+    }
 
-        th {
-            background-color: #f4f4f4;
-        }
+    th {
+      background-color: #f4f9ff;
+      color: #023e8a;
+      font-weight: 600;
+    }
 
-        button {
-            background-color: #65B741;
-            color: #FFF;
-            border: none;
-            padding: 10px 20px;
-            font-size: 16px;
-            border-radius: 5px;
-            cursor: pointer;
-        }
+    tr:nth-child(even) td {
+      background-color: #f9fcff;
+    }
 
-        button:hover {
-            background-color: #4a9a3f;
-        }
-    </style>
+    tr:hover td {
+      background-color: #f1f8ff;
+      transition: background-color 0.2s ease;
+    }
+
+    button {
+      display: block;
+      margin: 0 auto;
+      background-color: #68a7d9;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      font-size: 1rem;
+      border-radius: 10px;
+      cursor: pointer;
+      font-weight: 600;
+      transition: background-color 0.3s ease, transform 0.2s ease;
+    }
+
+    button:hover {
+      background-color: #4a8ec4;
+      transform: translateY(-2px);
+    }
+
+    @keyframes fadeIn {
+      from {
+        opacity: 0;
+        transform: translateY(20px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    @media (max-width: 600px) {
+      .container {
+        padding: 25px;
+      }
+      th, td {
+        font-size: 0.85rem;
+        padding: 10px;
+      }
+    }
+  </style>
 </head>
 <body>
-    <div class="container">
-        <h1>Hasil Pengisian Formulir</h1>
-        <table>
-            <tr>
-                <th>Nama</th>
-                <td>{{ nama }}</td>
-            </tr>
-            <tr>
-                <th>Email</th>
-                <td>{{ email }}</td>
-            </tr>
-            <tr>
-                <th>Tanggal Lahir</th>
-                <td>{{ tanggal_lahir }}</td>
-            </tr>
-            <tr>
-                <th>Alamat</th>
-                <td>{{ alamat }}</td>
-            </tr>
-            <tr>
-                <th>Pekerjaan</th>
-                <td>{{ pekerjaan }}</td>
-            </tr>
-            <tr>
-                <th>Hobi</th>
-                <td>{{ hobi }}</td>
-            </tr>
-            <tr>
-                <th>Jurusan</th>
-                <td>{{ jurusan }}</td>
-            </tr>
-            <tr>
-                <th>Jalur Pendaftaran</th>
-                <td>{{ jalur }}</td>
-            </tr>
-            <tr>
-                <th>Nama Orang Tua</th>
-                <td>{{ nama_orang_tua }}</td>
-            </tr>
-            <tr>
-                <th>Alamat Orang Tua</th>
-                <td>{{ alamat_orang_tua }}</td>
-            </tr>
-            <tr>
-                <th>Nomor Telepon Orang Tua</th>
-                <td>{{ phone_orang_tua }}</td>
-            </tr>
-            <tr></tr>
-                <th>Pesan</th>
-                <td>{{ pesan }}</td>
-            </tr>
-            <tr>
-                <th>Hasil Deteksi Kedipan Mata</th>
-                <td>{{ hasil_deteksi }}</td>
-            </tr>
-        </table>
-    
-        <!-- Tombol Download PDF -->
-        <form action="/download_pdf" method="POST">
-            <input type="hidden" name="nama" value="{{ nama }}">
-            <input type="hidden" name="email" value="{{ email }}">
-            <input type="hidden" name="tanggal_lahir" value="{{ tanggal_lahir }}">
-            <input type="hidden" name="alamat" value="{{ alamat }}">
-            <input type="hidden" name="pekerjaan" value="{{ pekerjaan }}">
-            <input type="hidden" name="hobi" value="{{ hobi }}">
-            <input type="hidden" name="jurusan" value="{{ jurusan }}">
-            <input type="hidden" name="jalur" value="{{ jalur }}">
-            <input type="hidden" name="nama_orang_tua" value="{{ nama_orang_tua }}">
-            <input type="hidden" name="alamat_orang_tua" value="{{ alamat_orang_tua }}">
-            <input type="hidden" name="phone_orang_tua" value="{{ phone_orang_tua }}">
-            <input type="hidden" name="pesan" value="{{ pesan }}">
-            <input type="hidden" name="hasil_deteksi" value="{{ hasil_deteksi }}">
-            <button type="submit">Download PDF</button>
-        </form>
-    </div>
+  <div class="container">
+    <h1>Hasil Pengisian Formulir</h1>
+    <table>
+      <tr><th>Nama</th><td>{{ nama }}</td></tr>
+      <tr><th>Email</th><td>{{ email }}</td></tr>
+      <tr><th>Tanggal Lahir</th><td>{{ tanggal_lahir }}</td></tr>
+      <tr><th>Alamat</th><td>{{ alamat }}</td></tr>
+      <tr><th>Pekerjaan</th><td>{{ pekerjaan }}</td></tr>
+      <tr><th>Hobi</th><td>{{ hobi }}</td></tr>
+      <tr><th>Jurusan</th><td>{{ jurusan }}</td></tr>
+      <tr><th>Jalur Pendaftaran</th><td>{{ jalur }}</td></tr>
+      <tr><th>Nama Orang Tua</th><td>{{ nama_orang_tua }}</td></tr>
+      <tr><th>Alamat Orang Tua</th><td>{{ alamat_orang_tua }}</td></tr>
+      <tr><th>Nomor Telepon Orang Tua</th><td>{{ phone_orang_tua }}</td></tr>
+      <tr><th>Pesan</th><td>{{ pesan }}</td></tr>
+      <tr><th>Hasil Deteksi Kedipan Mata</th><td>{{ hasil_deteksi }}</td></tr>
+    </table>
+
+    <!-- Tombol Download PDF -->
+    <form action="/download_pdf" method="POST">
+      <input type="hidden" name="nama" value="{{ nama }}">
+      <input type="hidden" name="email" value="{{ email }}">
+      <input type="hidden" name="tanggal_lahir" value="{{ tanggal_lahir }}">
+      <input type="hidden" name="alamat" value="{{ alamat }}">
+      <input type="hidden" name="pekerjaan" value="{{ pekerjaan }}">
+      <input type="hidden" name="hobi" value="{{ hobi }}">
+      <input type="hidden" name="jurusan" value="{{ jurusan }}">
+      <input type="hidden" name="jalur" value="{{ jalur }}">
+      <input type="hidden" name="nama_orang_tua" value="{{ nama_orang_tua }}">
+      <input type="hidden" name="alamat_orang_tua" value="{{ alamat_orang_tua }}">
+      <input type="hidden" name="phone_orang_tua" value="{{ phone_orang_tua }}">
+      <input type="hidden" name="pesan" value="{{ pesan }}">
+      <input type="hidden" name="hasil_deteksi" value="{{ hasil_deteksi }}">
+      <button type="submit">Download PDF</button>
+    </form>
+  </div>
 </body>
 </html>
