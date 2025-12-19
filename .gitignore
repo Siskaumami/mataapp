@@ -12,3 +12,6 @@ models/
 *.pt
 *.onnx
 *.weights
+*.dll
+*.pyd
+*.dat
