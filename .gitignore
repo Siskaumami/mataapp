@@ -6,3 +6,9 @@ models/
 runs/
 __pycache__/
 *.pyc
+dataset/
+runs/
+models/
+*.pt
+*.onnx
+*.weights
