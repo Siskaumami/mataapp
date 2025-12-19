@@ -1,248 +1,296 @@
-import os
-import sys
-from flask import Flask, render_template, Response, request, send_file
-import cv2
-import mediapipe as mp
-import numpy as np
-import threading
-from fpdf import FPDF
-import io
-from scipy.spatial import distance as dist
+# ============================================================
+#  BACKEND: Flask + MediaPipe FaceMesh
+#  Fungsi utama:
+#    - Menerima gambar dari Flutter (foto mata/wajah)
+#    - Deteksi iris & pupil menggunakan MediaPipe
+#    - Hitung pergerakan pupil antar frame (movement)
+#    - Tentukan status mata: normal / kemungkinan_tunanetra
+#    - Mengirim hasilnya kembali dalam bentuk JSON
+# ============================================================
 
-# === Konfigurasi dasar Flask ===
-def get_template_path():
-    try:
-        base_path = sys._MEIPASS if getattr(sys, 'frozen', False) else os.path.dirname(os.path.abspath(__file__))
-    except Exception as e:
-        base_path = os.path.dirname(os.path.abspath(__file__))
-        print(f"Error in template path: {e}")
-    return os.path.join(base_path, 'templates')
+from flask import Flask, request, jsonify
+from flask_cors import CORS     # supaya API bisa diakses dari domain lain (Flutter, Web, dll)
+import cv2                     # OpenCV, untuk mengolah gambar
+import numpy as np             # operasi matematika / vektor
+import base64                  # decode gambar base64 (mode web)
+import mediapipe as mp         # library MediaPipe untuk FaceMesh (deteksi wajah & iris)
 
-app = Flask(__name__, template_folder=get_template_path())
 
-# === Variabel global ===
-blink_count = 0
-closed_eye_frames = 0
-detection_result = ""
-camera_active = True
-cap = None  # Kamera global agar tidak dibuka dua kali
+# ============================================================
+#  INISIALISASI FLASK APP
+# ============================================================
+app = Flask(__name__)
+CORS(app)  # mengaktifkan CORS, agar bisa diakses dari Flutter (android / web) tanpa blokir CORS
 
-# === Inisialisasi Mediapipe ===
-mp_face_mesh = mp.solutions.face_mesh
-face_mesh = mp_face_mesh.FaceMesh(
-    static_image_mode=False,
+
+# ============================================================
+#  INISIALISASI MEDIAPIPE FACEMESH
+# ============================================================
+# FaceMesh = model Mediapipe untuk mendeteksi:
+#   - bentuk wajah (468 landmark)
+#   - + iris/pupil (butuh refine_landmarks=True)
+#
+# Parameter:
+#   max_num_faces            → hanya deteksi 1 wajah
+#   refine_landmarks=True    → penting untuk deteksi iris & pupil (index 468+)
+#   min_detection_confidence → kepercayaan minimal untuk deteksi wajah
+#   min_tracking_confidence  → kepercayaan minimal untuk tracking landmark
+mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
     max_num_faces=1,
     refine_landmarks=True,
-    min_detection_confidence=0.5
+    min_detection_confidence=0.5,
+    min_tracking_confidence=0.5
 )
-mp_drawing = mp.solutions.drawing_utils
 
-# === EAR Function (Eye Aspect Ratio) ===
-def eye_aspect_ratio(landmarks, eye_indices):
-    A = dist.euclidean(landmarks[eye_indices[1]], landmarks[eye_indices[5]])
-    B = dist.euclidean(landmarks[eye_indices[2]], landmarks[eye_indices[4]])
-    C = dist.euclidean(landmarks[eye_indices[0]], landmarks[eye_indices[3]])
-    ear = (A + B) / (2.0 * C)
-    return ear
 
-# Indeks mata untuk Mediapipe Face Mesh
-LEFT_EYE = [33, 160, 158, 133, 153, 144]
-RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+# ============================================================
+#  INDEX LANDMARK IRIS & PUPIL (dari dokumentasi MediaPipe)
+# ============================================================
+# Index landmark untuk iris & pupil:
+#   - Pupil kanan: center 468, ring 469-472
+#   - Pupil kiri : center 473, ring 474-477
+# ============================================================
 
-# === Fungsi deteksi kedipan ===
-def deteksi_kedipan():
-    global blink_count, closed_eye_frames, detection_result, camera_active, cap
+RIGHT_PUPIL_CENTER = 468
+RIGHT_IRIS_RING = [469, 470, 471, 472]
 
-    ear_threshold = 0.25
-    consec_frames = 2
-    frame_count = 0
+LEFT_PUPIL_CENTER = 473
+LEFT_IRIS_RING = [474, 475, 476, 477]
 
-    if cap is None:
-        cap = cv2.VideoCapture(0)
 
-    while camera_active:
-        ret, frame = cap.read()
-        if not ret:
-            continue
+# ============================================================
+#  VARIABEL GLOBAL UNTUK FRAME SEBELUMNYA
+# ============================================================
+# Variabel ini dipakai untuk menyimpan posisi pupil
+# pada frame sebelumnya, agar kita bisa menghitung
+# seberapa jauh pupil berpindah (movement) antar frame.
+# ============================================================
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb_frame)
+prev_left_center = None   # (x, y) pupil kiri pada frame sebelumnya
+prev_right_center = None  # (x, y) pupil kanan pada frame sebelumnya
 
-        if results.multi_face_landmarks:
-            for face_landmarks in results.multi_face_landmarks:
-                h, w, _ = frame.shape
-                landmarks = [(int(pt.x * w), int(pt.y * h)) for pt in face_landmarks.landmark]
 
-                left_ear = eye_aspect_ratio(landmarks, LEFT_EYE)
-                right_ear = eye_aspect_ratio(landmarks, RIGHT_EYE)
-                ear = (left_ear + right_ear) / 2.0
+# ============================================================
+#  FUNGSI: decode_image(request)
+#  - Menerima request dari client
+#  - Mengambil gambar dari:
+#       1. multipart/form-data  (mode Android/iOS)
+#       2. JSON base64          (mode Web)
+#  - Mengembalikan: gambar dalam format OpenCV (numpy array BGR)
+# ============================================================
+def decode_image(request):
+    try:
+        # ----------------------------------------------------
+        # 1) Jika gambar dikirim sebagai file (form-data)
+        # ----------------------------------------------------
+        if "image" in request.files:
+            file = request.files["image"]      # ambil file dari form
+            img_bytes = file.read()            # baca dalam bentuk bytes
+            # decode bytes → numpy array (format BGR OpenCV)
+            img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            return img
 
-                if ear < ear_threshold:
-                    closed_eye_frames += 1
-                    frame_count += 1
-                    print(f"[INFO] Mata tertutup - EAR: {ear:.2f}")
-                else:
-                    if frame_count >= consec_frames:
-                        blink_count += 1
-                        print(f"[INFO] Kedipan terdeteksi! Total: {blink_count}")
-                    frame_count = 0
+        # ----------------------------------------------------
+        # 2) Jika gambar dikirim dalam format JSON base64
+        # ----------------------------------------------------
+        if request.is_json:
+            img64 = request.json.get("image")  # ambil string base64
 
-                # Gambar mesh wajah
-                mp_drawing.draw_landmarks(
-                    frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS,
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
-                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1)
-                )
+            # format: "data:image/jpeg;base64,AAAAA..."
+            if img64 and img64.startswith("data:image"):
+                # pisahkan header "data:image/..." dan isi base64-nya
+                _, encoded = img64.split(",", 1)
+                img_bytes = base64.b64decode(encoded)  # decode base64 → bytes
+                img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+                return img
+    except:
+        # jika ada error (format tidak valid, dsb)
+        return None
 
-        # Tentukan status deteksi
-        if blink_count > 10 and closed_eye_frames <= 50:
-            detection_result = "Normal"
-        elif closed_eye_frames > 100:
-            detection_result = "Tunanetra"
-        elif blink_count == 0 and closed_eye_frames > 10:
-            detection_result = "Tunanetra"
-        else:
-            detection_result = "Normal"
+    return None
 
-        print(f"[STATUS] Blink: {blink_count}, ClosedFrames: {closed_eye_frames}, Result: {detection_result}")
 
-    if cap is not None:
-        cap.release()
-        cap = None
-    cv2.destroyAllWindows()
+# ============================================================
+#  FUNGSI: calculate_movement(prev, now)
+#  - Menghitung jarak perpindahan pupil (movement)
+#  - Input:
+#       prev = posisi pupil frame sebelumnya (x_prev, y_prev)
+#       now  = posisi pupil frame sekarang   (x_now,  y_now)
+#  - Rumus:
+#       movement = sqrt( (dx)^2 + (dy)^2 )  → jarak Euclidean
+# ============================================================
+def calculate_movement(prev, now):
+    # jika belum ada data sebelumnya (frame pertama)
+    if prev is None:
+        return 0.0  # movement = 0 di frame pertama
 
-# === ROUTE Flask ===
-@app.route('/')
-def index():
-    global camera_active
-    camera_active = True
-    detection_thread = threading.Thread(target=deteksi_kedipan)
-    detection_thread.daemon = True
-    detection_thread.start()
-    return render_template('form.html')
+    # ubah ke numpy array lalu hitung jarak Euclidean
+    return float(np.linalg.norm(np.array(prev) - np.array(now)))
 
-@app.route('/submit', methods=['POST'])
-def submit_form():
-    nama = request.form['nama']
-    email = request.form['email']
-    tanggal_lahir = request.form['tanggal_lahir']
-    alamat = request.form['alamat']
-    pekerjaan = request.form['pekerjaan']
-    hobi = request.form['hobi']
-    jurusan = request.form['jurusan']
-    jalur = request.form['jalur']
-    nama_orang_tua = request.form['nama_orang_tua']
-    alamat_orang_tua = request.form['alamat_orang_tua']
-    phone_orang_tua = request.form['phone_orang_tua']
-    pesan = request.form['pesan']
 
-    global camera_active, detection_result
-    camera_active = False  # Matikan kamera setelah form dikirim
+# ============================================================
+#  FUNGSI: extract_pupil(img)
+#  - Deteksi iris & pupil menggunakan MediaPipe FaceMesh
+#  - Menghitung:
+#       - koordinat pusat pupil kiri & kanan
+#       - radius iris kiri & kanan
+#       - movement pupil kiri & kanan
+#  - Output: dictionary berisi data kedua mata
+# ============================================================
+def extract_pupil(img):
+    global prev_left_center, prev_right_center  # pakai variabel global
 
-    return render_template(
-        'hasil.html',
-        nama=nama,
-        email=email,
-        tanggal_lahir=tanggal_lahir,
-        alamat=alamat,
-        pekerjaan=pekerjaan,
-        hobi=hobi,
-        jurusan=jurusan,
-        jalur=jalur,
-        nama_orang_tua=nama_orang_tua,
-        alamat_orang_tua=alamat_orang_tua,
-        phone_orang_tua=phone_orang_tua,
-        pesan=pesan,
-        hasil_deteksi=detection_result
-    )
+    # ukuran gambar
+    h, w = img.shape[:2]
 
-# === Streaming video ke browser ===
-def gen():
-    global cap
-    if cap is None:
-        cap = cv2.VideoCapture(0)
+    # MediaPipe butuh format RGB, sedangkan OpenCV → BGR
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
 
-    while camera_active:
-        ret, frame = cap.read()
-        if not ret:
-            continue
+    # jalankan FaceMesh
+    results = mp_face_mesh.process(rgb)
 
-        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        results = face_mesh.process(rgb_frame)
+    # jika wajah tidak terdeteksi
+    if not results.multi_face_landmarks:
+        return None
 
-        if results.multi_face_landmarks:
-            for face_landmarks in results.multi_face_landmarks:
-                mp_drawing.draw_landmarks(
-                    frame, face_landmarks, mp_face_mesh.FACEMESH_CONTOURS,
-                    mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
-                    mp_drawing.DrawingSpec(color=(0, 0, 255), thickness=1)
-                )
+    # ambil landmark wajah pertama (karena max_num_faces=1)
+    lm = results.multi_face_landmarks[0].landmark
 
-        ret, buffer = cv2.imencode('.jpg', frame)
-        frame = buffer.tobytes()
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + frame + b'\r\n')
+    # cek apakah landmark cukup sampai index 477 (478 titik)
+    if len(lm) < 478:
+        return None
 
-    if cap is not None:
-        cap.release()
-        cap = None
+    # --------------------------------------------------------
+    #  Fungsi bantu untuk menghitung:
+    #    - pusat pupil dalam pixel
+    #    - radius iris (rata-rata jarak center → ring iris)
+    # --------------------------------------------------------
+    def calc(center_idx, ring):
+        # koor. pusat pupil (dalam pixel)
+        cx = int(lm[center_idx].x * w)
+        cy = int(lm[center_idx].y * h)
 
-@app.route('/video_feed')
-def video_feed():
-    return Response(gen(), mimetype='multipart/x-mixed-replace; boundary=frame')
+        # titik-titik ring iris (4 titik)
+        pts = [(int(lm[i].x * w), int(lm[i].y * h)) for i in ring]
 
-# === ROUTE Download PDF ===
-@app.route('/download_pdf', methods=['POST'])
-def download_pdf():
-    nama = request.form.get('nama', '')
-    email = request.form.get('email', '')
-    tanggal_lahir = request.form.get('tanggal_lahir', '')
-    alamat = request.form.get('alamat', '')
-    pekerjaan = request.form.get('pekerjaan', '')
-    hobi = request.form.get('hobi', '')
-    jurusan = request.form.get('jurusan', '')
-    jalur = request.form.get('jalur', '')
-    nama_orang_tua = request.form.get('nama_orang_tua', '')
-    alamat_orang_tua = request.form.get('alamat_orang_tua', '')
-    phone_orang_tua = request.form.get('phone_orang_tua', '')
-    pesan = request.form.get('pesan', '')
-    hasil_deteksi = request.form.get('hasil_deteksi', '')
+        # hitung jarak dari pusat ke masing-masing titik ring
+        d = [np.linalg.norm(np.array([cx, cy]) - np.array(p)) for p in pts]
 
-    # Buat PDF dengan FPDF
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(0, 10, "FORMULIR PENDAFTARAN MAHASISWA", ln=True, align='C')
-    pdf.ln(10)
+        # radius = rata-rata jarak
+        radius = float(np.mean(d))
 
-    pdf.set_font("Arial", '', 12)
-    fields = [
-        ("Nama", nama),
-        ("Email", email),
-        ("Tanggal Lahir", tanggal_lahir),
-        ("Alamat", alamat),
-        ("Pekerjaan", pekerjaan),
-        ("Hobi", hobi),
-        ("Jurusan", jurusan),
-        ("Jalur", jalur),
-        ("Nama Orang Tua", nama_orang_tua),
-        ("Alamat Orang Tua", alamat_orang_tua),
-        ("No. Telepon Orang Tua", phone_orang_tua),
-        ("Pesan", pesan),
-        ("Hasil Deteksi Kedipan", hasil_deteksi)
-    ]
-    for label, value in fields:
-        pdf.cell(60, 10, f"{label}:", 0, 0)
-        pdf.multi_cell(0, 10, value)
+        # kembalikan (center, radius)
+        return (cx, cy), radius
 
-    pdf_output = pdf.output(dest='S').encode('latin1')
-    return send_file(
-        io.BytesIO(pdf_output),
-        as_attachment=True,
-        download_name=f"hasil_deteksi_{nama.replace(' ', '_')}.pdf",
-        mimetype='application/pdf'
-    )
+    # --------------------------------------------------------
+    #  Hitung pupil kanan dan kiri menggunakan fungsi calc()
+    # --------------------------------------------------------
+    right_center, right_radius = calc(RIGHT_PUPIL_CENTER, RIGHT_IRIS_RING)
+    left_center, left_radius = calc(LEFT_PUPIL_CENTER, LEFT_IRIS_RING)
 
-# === Jalankan Flask ===
+    # --------------------------------------------------------
+    #  Hitung pergerakan (movement) pupil antara frame lama & baru
+    # --------------------------------------------------------
+    right_movement = calculate_movement(prev_right_center, right_center)
+    left_movement = calculate_movement(prev_left_center, left_center)
+
+    # simpan posisi saat ini sebagai "frame sebelumnya" untuk panggilan berikutnya
+    prev_right_center = right_center
+    prev_left_center = left_center
+
+    # kembalikan data lengkap kedua mata dalam bentuk dictionary
+    return {
+        "right": {
+            "center_x": right_center[0],
+            "center_y": right_center[1],
+            "radius": right_radius,
+            "movement": right_movement
+        },
+        "left": {
+            "center_x": left_center[0],
+            "center_y": left_center[1],
+            "radius": left_radius,
+            "movement": left_movement
+        }
+    }
+
+
+# ============================================================
+#  FUNGSI: eye_status(movement_left, movement_right)
+#  - Menentukan "status mata" berdasarkan pergerakan pupil
+#
+#  Logika sederhana:
+#     - Jika gerakan kiri & kanan < threshold → kemungkinan_tunanetra
+#     - Jika salah satu atau dua-duanya ≥ threshold → normal
+#
+#  Catatan:
+#     threshold ini masih kasar (heuristik),
+#     nanti bisa dituning dari data penelitian/klinik.
+# ============================================================
+def eye_status(movement_left, movement_right):
+    threshold = 1.0  # ambang batas movement dalam pixel (bisa disesuaikan)
+
+    # kedua mata hampir tidak bergerak (bawah threshold)
+    if movement_left < threshold and movement_right < threshold:
+        return "kemungkinan_tunanetra"
+    else:
+        # minimal satu mata bergerak cukup → dianggap normal
+        return "normal"
+
+
+# ============================================================
+#  API ENDPOINT: /detect  (METHOD: POST)
+#  - Dihubungkan dengan Flutter
+#  - Alur:
+#     1. Ambil gambar dari request (decode_image)
+#     2. Jalankan extract_pupil untuk deteksi iris & movement
+#     3. Hitung status mata dengan eye_status()
+#     4. Kirim hasil JSON ke Flutter
+# ============================================================
+@app.route("/detect", methods=["POST"])
+def detect():
+    # decode gambar dari request (file / base64)
+    img = decode_image(request)
+
+    # jika gagal baca gambar
+    if img is None:
+        return jsonify({"error": "Gagal membaca gambar"}), 400
+
+    # deteksi pupil + movement
+    pupil = extract_pupil(img)
+
+    # jika gagal deteksi wajah / iris
+    if pupil is None:
+        return jsonify({
+            "status": "pupil_not_found",
+            "message": "Wajah/iris tidak terdeteksi"
+        })
+
+    # tentukan status eyes berdasarkan movement pupil kiri & kanan
+    status = eye_status(pupil["left"]["movement"], pupil["right"]["movement"])
+
+    # kirim JSON lengkap:
+    #  - status: normal / kemungkinan_tunanetra
+    #  - pupil: data kiri & kanan (center, radius, movement)
+    return jsonify({
+        "status": status,
+        "pupil": pupil
+    })
+
+
+# ============================================================
+#  ENDPOINT ROOT "/" – hanya untuk mengecek server hidup
+# ============================================================
+@app.route("/")
+def home():
+    return jsonify({"status": "MediaPipe Iris Detector with Movement Tracking OK"})
+
+
+# ============================================================
+#  MENJALANKAN SERVER FLASK
+#  host="0.0.0.0" → agar bisa diakses dari device lain di jaringan yang sama
+#  port=5000      → port server
+#  debug=True     → log lebih lengkap (sebaiknya False di produksi)
+# ============================================================
 if __name__ == "__main__":
-    app.run(debug=False, threaded=False)
+    app.run(host="0.0.0.0", port=5000, debug=True)

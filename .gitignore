@@ -1,3 +1,8 @@
-/build
-/dist
-/MataApp.spec
+.venv/
+venv/
+backendenv/
+dataset/
+models/
+runs/
+__pycache__/
+*.pyc

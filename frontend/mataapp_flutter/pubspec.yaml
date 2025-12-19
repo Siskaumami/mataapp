@@ -1,0 +1,36 @@
+name: mataapp_flutter
+description: "A new Flutter project for MataApp (Integrasi Flask + Flutter)"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: ^3.7.2
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+  http: ^1.2.2
+  image_picker: ^1.1.2
+
+  # Kamera
+  camera: ^0.10.5+2
+  camera_web: ^0.3.3+4
+
+  # Utilities
+  mime: ^1.0.4
+  path: ^1.8.3
+  http_parser: ^4.0.2
+
+  # 📌 TAMBAHKAN DI SINI (BUKAN DIBAWAH)
+  fl_chart: ^0.65.0
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
