@@ -1,296 +1,370 @@
-# ============================================================
-#  BACKEND: Flask + MediaPipe FaceMesh
-#  Fungsi utama:
-#    - Menerima gambar dari Flutter (foto mata/wajah)
-#    - Deteksi iris & pupil menggunakan MediaPipe
-#    - Hitung pergerakan pupil antar frame (movement)
-#    - Tentukan status mata: normal / kemungkinan_tunanetra
-#    - Mengirim hasilnya kembali dalam bentuk JSON
-# ============================================================
-
 from flask import Flask, request, jsonify
-from flask_cors import CORS     # supaya API bisa diakses dari domain lain (Flutter, Web, dll)
-import cv2                     # OpenCV, untuk mengolah gambar
-import numpy as np             # operasi matematika / vektor
-import base64                  # decode gambar base64 (mode web)
-import mediapipe as mp         # library MediaPipe untuk FaceMesh (deteksi wajah & iris)
+# Flask        → bikin server backend
+# request      → ambil data dari Flutter (gambar)
+# jsonify      → kirim hasil ke Flutter dalam bentuk JSON
+
+from flask_cors import CORS
+# CORS → supaya backend bisa diakses dari Flutter / Web tanpa diblok browser
+
+import cv2
+# OpenCV → untuk decode dan mengolah gambar
+
+import numpy as np
+# NumPy → untuk hitung jarak, vektor, dan operasi angka
+
+import base64
+# base64 → decode gambar kalau dikirim dari Web (string base64)
+
+import mediapipe as mp
+# MediaPipe → library untuk deteksi wajah, mata, iris, dan pupil
 
 
-# ============================================================
-#  INISIALISASI FLASK APP
-# ============================================================
+# =========================
+# INISIALISASI FLASK APP
+# =========================
+
 app = Flask(__name__)
-CORS(app)  # mengaktifkan CORS, agar bisa diakses dari Flutter (android / web) tanpa blokir CORS
+# bikin aplikasi backend Flask
+
+CORS(app)
+# aktifkan CORS supaya Flutter boleh akses API ini
 
 
-# ============================================================
-#  INISIALISASI MEDIAPIPE FACEMESH
-# ============================================================
-# FaceMesh = model Mediapipe untuk mendeteksi:
-#   - bentuk wajah (468 landmark)
-#   - + iris/pupil (butuh refine_landmarks=True)
-#
-# Parameter:
-#   max_num_faces            → hanya deteksi 1 wajah
-#   refine_landmarks=True    → penting untuk deteksi iris & pupil (index 468+)
-#   min_detection_confidence → kepercayaan minimal untuk deteksi wajah
-#   min_tracking_confidence  → kepercayaan minimal untuk tracking landmark
+# =========================
+# MEDIA PIPE FACE MESH
+# =========================
+
 mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
-    max_num_faces=1,
-    refine_landmarks=True,
-    min_detection_confidence=0.5,
-    min_tracking_confidence=0.5
+    max_num_faces=1,              # hanya deteksi 1 wajah (lebih ringan)
+    refine_landmarks=True,        # WAJIB agar iris & pupil terdeteksi
+    min_detection_confidence=0.5, # minimal yakin 50% saat deteksi awal wajah
+    min_tracking_confidence=0.5   # minimal yakin 50% saat tracking antar frame
 )
 
 
-# ============================================================
-#  INDEX LANDMARK IRIS & PUPIL (dari dokumentasi MediaPipe)
-# ============================================================
-# Index landmark untuk iris & pupil:
-#   - Pupil kanan: center 468, ring 469-472
-#   - Pupil kiri : center 473, ring 474-477
-# ============================================================
+# =========================
+# LANDMARK INDEX (PATOKAN TITIK)
+# =========================
 
+# Pusat pupil dan lingkar iris kanan
 RIGHT_PUPIL_CENTER = 468
 RIGHT_IRIS_RING = [469, 470, 471, 472]
 
+# Pusat pupil dan lingkar iris kiri
 LEFT_PUPIL_CENTER = 473
 LEFT_IRIS_RING = [474, 475, 476, 477]
 
+# Sudut mata (inner & outer corner)
+# Dipakai sebagai "anchor" supaya gerakan kepala tidak ikut terhitung
+LEFT_EYE_CORNERS = (33, 133)
+RIGHT_EYE_CORNERS = (362, 263)
 
-# ============================================================
-#  VARIABEL GLOBAL UNTUK FRAME SEBELUMNYA
-# ============================================================
-# Variabel ini dipakai untuk menyimpan posisi pupil
-# pada frame sebelumnya, agar kita bisa menghitung
-# seberapa jauh pupil berpindah (movement) antar frame.
-# ============================================================
-
-prev_left_center = None   # (x, y) pupil kiri pada frame sebelumnya
-prev_right_center = None  # (x, y) pupil kanan pada frame sebelumnya
+# Titik kelopak mata (buat deteksi mata terbuka/tertutup secara sederhana)
+# (atas, bawah) untuk hitung "openness ratio" mirip EAR versi simple
+LEFT_EYE_LID = (159, 145)     # atas kiri, bawah kiri
+RIGHT_EYE_LID = (386, 374)    # atas kanan, bawah kanan
 
 
-# ============================================================
-#  FUNGSI: decode_image(request)
-#  - Menerima request dari client
-#  - Mengambil gambar dari:
-#       1. multipart/form-data  (mode Android/iOS)
-#       2. JSON base64          (mode Web)
-#  - Mengembalikan: gambar dalam format OpenCV (numpy array BGR)
-# ============================================================
-def decode_image(request):
-    try:
-        # ----------------------------------------------------
-        # 1) Jika gambar dikirim sebagai file (form-data)
-        # ----------------------------------------------------
-        if "image" in request.files:
-            file = request.files["image"]      # ambil file dari form
-            img_bytes = file.read()            # baca dalam bentuk bytes
-            # decode bytes → numpy array (format BGR OpenCV)
-            img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-            return img
+# =========================
+# STATE (MENYIMPAN FRAME SEBELUMNYA)
+# =========================
 
-        # ----------------------------------------------------
-        # 2) Jika gambar dikirim dalam format JSON base64
-        # ----------------------------------------------------
-        if request.is_json:
-            img64 = request.json.get("image")  # ambil string base64
+# Posisi pupil relatif frame sebelumnya (buat movement)
+prev_left_rel = None
+prev_right_rel = None
 
-            # format: "data:image/jpeg;base64,AAAAA..."
-            if img64 and img64.startswith("data:image"):
-                # pisahkan header "data:image/..." dan isi base64-nya
-                _, encoded = img64.split(",", 1)
-                img_bytes = base64.b64decode(encoded)  # decode base64 → bytes
-                img = cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
-                return img
-    except:
-        # jika ada error (format tidak valid, dsb)
-        return None
+# HOLD hasil terakhir saat mata TERBUKA (biar saat merem hasil tidak loncat)
+last_open_pupil = None
+last_open_status = None
+
+
+# =========================
+# HELPER FUNCTIONS
+# =========================
+
+def decode_image(req):
+    """
+    Fungsi untuk membaca gambar dari request Flutter.
+    Bisa menerima:
+    1) multipart/form-data (Android / iOS)
+    2) JSON base64 (Web)
+    """
+
+    # ----- MODE MULTIPART -----
+    if "image" in req.files:
+        img_bytes = req.files["image"].read()
+        return cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+
+    # ----- MODE BASE64 (WEB) -----
+    if req.is_json:
+        img64 = req.json.get("image")
+        if img64 and img64.startswith("data:image"):
+            _, encoded = img64.split(",", 1)
+            img_bytes = base64.b64decode(encoded)
+            return cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
 
     return None
 
 
-# ============================================================
-#  FUNGSI: calculate_movement(prev, now)
-#  - Menghitung jarak perpindahan pupil (movement)
-#  - Input:
-#       prev = posisi pupil frame sebelumnya (x_prev, y_prev)
-#       now  = posisi pupil frame sekarang   (x_now,  y_now)
-#  - Rumus:
-#       movement = sqrt( (dx)^2 + (dy)^2 )  → jarak Euclidean
-# ============================================================
+def to_px(lm, idx, w, h):
+    """Ubah koordinat landmark MediaPipe (0..1) jadi pixel asli."""
+    return np.array([lm[idx].x * w, lm[idx].y * h], dtype=np.float32)
+
+
+def midpoint(a, b):
+    """Hitung titik tengah dua titik."""
+    return (a + b) / 2.0
+
+
+def distance(a, b):
+    """Jarak Euclidean dua titik."""
+    return float(np.linalg.norm(a - b))
+
+
 def calculate_movement(prev, now):
-    # jika belum ada data sebelumnya (frame pertama)
+    """Movement antar frame."""
     if prev is None:
-        return 0.0  # movement = 0 di frame pertama
-
-    # ubah ke numpy array lalu hitung jarak Euclidean
-    return float(np.linalg.norm(np.array(prev) - np.array(now)))
+        return 0.0
+    return distance(prev, now)
 
 
-# ============================================================
-#  FUNGSI: extract_pupil(img)
-#  - Deteksi iris & pupil menggunakan MediaPipe FaceMesh
-#  - Menghitung:
-#       - koordinat pusat pupil kiri & kanan
-#       - radius iris kiri & kanan
-#       - movement pupil kiri & kanan
-#  - Output: dictionary berisi data kedua mata
-# ============================================================
+def eye_openness_ratio(lm, w, h, corners, lid_points):
+    """
+    Deteksi mata terbuka/tertutup (versi sederhana, mirip EAR):
+    - horizontal = jarak sudut mata (corner1-corner2)
+    - vertical   = jarak kelopak atas-bawah
+    openness = vertical / horizontal
+
+    Kalau nilainya kecil sekali → mata kemungkinan tertutup/merem.
+    """
+    c1 = to_px(lm, corners[0], w, h)
+    c2 = to_px(lm, corners[1], w, h)
+    top = to_px(lm, lid_points[0], w, h)
+    bottom = to_px(lm, lid_points[1], w, h)
+
+    horizontal = max(distance(c1, c2), 1e-6)
+    vertical = distance(top, bottom)
+
+    return float(vertical / horizontal)
+
+
+# =========================
+# CORE PROCESSING
+# =========================
+
 def extract_pupil(img):
-    global prev_left_center, prev_right_center  # pakai variabel global
+    """
+    Fungsi utama backend:
+    - Deteksi pupil kiri & kanan
+    - Deteksi mata terbuka/tertutup
+    - Kalau terbuka → hitung movement + update prev
+    - Kalau tertutup → tetap bisa baca titik, tapi prev TIDAK diupdate (biar hold)
+    """
+    global prev_left_rel, prev_right_rel
 
-    # ukuran gambar
     h, w = img.shape[:2]
-
-    # MediaPipe butuh format RGB, sedangkan OpenCV → BGR
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-
-    # jalankan FaceMesh
     results = mp_face_mesh.process(rgb)
 
-    # jika wajah tidak terdeteksi
     if not results.multi_face_landmarks:
         return None
 
-    # ambil landmark wajah pertama (karena max_num_faces=1)
     lm = results.multi_face_landmarks[0].landmark
 
-    # cek apakah landmark cukup sampai index 477 (478 titik)
+    # safety: iris butuh minimal 478 landmark
     if len(lm) < 478:
         return None
 
-    # --------------------------------------------------------
-    #  Fungsi bantu untuk menghitung:
-    #    - pusat pupil dalam pixel
-    #    - radius iris (rata-rata jarak center → ring iris)
-    # --------------------------------------------------------
+    # -------------------------
+    # 1) Cek mata terbuka/tertutup dulu Eye aspec ratio
+    # -------------------------
+    left_open_ratio = eye_openness_ratio(lm, w, h, LEFT_EYE_CORNERS, LEFT_EYE_LID)
+    right_open_ratio = eye_openness_ratio(lm, w, h, RIGHT_EYE_CORNERS, RIGHT_EYE_LID)
+
+    # Semakin kecil threshold → semakin ketat dianggap "tertutup".
+    EYE_CLOSED_THRESHOLD = 0.18
+
+    left_is_closed = left_open_ratio < EYE_CLOSED_THRESHOLD
+    right_is_closed = right_open_ratio < EYE_CLOSED_THRESHOLD
+
+    # Kalau salah satu tertutup → anggap closed
+    any_closed = left_is_closed or right_is_closed
+
+    # -------------------------
+    # 2) Hitung pupil center & radius 
+    # -------------------------
     def calc(center_idx, ring):
-        # koor. pusat pupil (dalam pixel)
-        cx = int(lm[center_idx].x * w)
-        cy = int(lm[center_idx].y * h)
+        center = to_px(lm, center_idx, w, h)
+        ring_pts = [to_px(lm, i, w, h) for i in ring]
+        radius = np.mean([distance(center, p) for p in ring_pts])
+        return center, float(radius)
 
-        # titik-titik ring iris (4 titik)
-        pts = [(int(lm[i].x * w), int(lm[i].y * h)) for i in ring]
-
-        # hitung jarak dari pusat ke masing-masing titik ring
-        d = [np.linalg.norm(np.array([cx, cy]) - np.array(p)) for p in pts]
-
-        # radius = rata-rata jarak
-        radius = float(np.mean(d))
-
-        # kembalikan (center, radius)
-        return (cx, cy), radius
-
-    # --------------------------------------------------------
-    #  Hitung pupil kanan dan kiri menggunakan fungsi calc()
-    # --------------------------------------------------------
-    right_center, right_radius = calc(RIGHT_PUPIL_CENTER, RIGHT_IRIS_RING)
     left_center, left_radius = calc(LEFT_PUPIL_CENTER, LEFT_IRIS_RING)
+    right_center, right_radius = calc(RIGHT_PUPIL_CENTER, RIGHT_IRIS_RING)
 
-    # --------------------------------------------------------
-    #  Hitung pergerakan (movement) pupil antara frame lama & baru
-    # --------------------------------------------------------
-    right_movement = calculate_movement(prev_right_center, right_center)
-    left_movement = calculate_movement(prev_left_center, left_center)
+    # ambil sudut mata untuk anchor/cornet
+    l1 = to_px(lm, LEFT_EYE_CORNERS[0], w, h)
+    l2 = to_px(lm, LEFT_EYE_CORNERS[1], w, h)
+    r1 = to_px(lm, RIGHT_EYE_CORNERS[0], w, h)
+    r2 = to_px(lm, RIGHT_EYE_CORNERS[1], w, h)
 
-    # simpan posisi saat ini sebagai "frame sebelumnya" untuk panggilan berikutnya
-    prev_right_center = right_center
-    prev_left_center = left_center
+    left_anchor = midpoint(l1, l2)
+    right_anchor = midpoint(r1, r2)
 
-    # kembalikan data lengkap kedua mata dalam bentuk dictionary
-    return {
-        "right": {
-            "center_x": right_center[0],
-            "center_y": right_center[1],
-            "radius": right_radius,
-            "movement": right_movement
-        },
-        "left": {
-            "center_x": left_center[0],
-            "center_y": left_center[1],
-            "radius": left_radius,
-            "movement": left_movement
+    # posisi pupil relatif terhadap mata (kompensasi gerak kepala)
+    left_rel = left_center - left_anchor
+    right_rel = right_center - right_anchor
+
+    # -------------------------
+    # 3) Kalau mata tertutup: jangan update prev → biar HOLD
+    #    (movement kita set 0.0 supaya tidak bikin spike)
+    # -------------------------
+    if any_closed:
+        left_norm = 0.0
+        right_norm = 0.0
+
+        return {
+            "pupil": {
+                "left": {
+                    "center_x": float(left_center[0]),
+                    "center_y": float(left_center[1]),
+                    "movement_norm": float(left_norm),
+                    "radius": float(left_radius)
+                },
+                "right": {
+                    "center_x": float(right_center[0]),
+                    "center_y": float(right_center[1]),
+                    "movement_norm": float(right_norm),
+                    "radius": float(right_radius)
+                }
+            },
+            "eye_state": {
+                "left": "closed" if left_is_closed else "open",
+                "right": "closed" if right_is_closed else "open"
+            },
+            "any_closed": True
         }
+
+    # -------------------------
+    # 4) Kalau kedua mata terbuka: hitung movement + update prev
+    # -------------------------
+    left_move = calculate_movement(prev_left_rel, left_rel)
+    right_move = calculate_movement(prev_right_rel, right_rel)
+
+    left_eye_width = max(distance(l1, l2), 1e-6)
+    right_eye_width = max(distance(r1, r2), 1e-6)
+
+    left_norm = left_move / left_eye_width
+    right_norm = right_move / right_eye_width
+
+    # update prev karena mata terbuka (valid)
+    prev_left_rel = left_rel
+    prev_right_rel = right_rel
+
+    return {
+        "pupil": {
+            "left": {
+                "center_x": float(left_center[0]),
+                "center_y": float(left_center[1]),
+                "movement_norm": float(left_norm),
+                "radius": float(left_radius)
+            },
+            "right": {
+                "center_x": float(right_center[0]),
+                "center_y": float(right_center[1]),
+                "movement_norm": float(right_norm),
+                "radius": float(right_radius)
+            }
+        },
+        "eye_state": {
+            "left": "open",
+            "right": "open"
+        },
+        "any_closed": False
     }
 
 
-# ============================================================
-#  FUNGSI: eye_status(movement_left, movement_right)
-#  - Menentukan "status mata" berdasarkan pergerakan pupil
-#
-#  Logika sederhana:
-#     - Jika gerakan kiri & kanan < threshold → kemungkinan_tunanetra
-#     - Jika salah satu atau dua-duanya ≥ threshold → normal
-#
-#  Catatan:
-#     threshold ini masih kasar (heuristik),
-#     nanti bisa dituning dari data penelitian/klinik.
-# ============================================================
-def eye_status(movement_left, movement_right):
-    threshold = 1.0  # ambang batas movement dalam pixel (bisa disesuaikan)
+# =========================
+# LOGIKA STATUS MATA (NORMAL / KEMUNGKINAN TUNANETRA)
+# =========================
 
-    # kedua mata hampir tidak bergerak (bawah threshold)
-    if movement_left < threshold and movement_right < threshold:
+def eye_status(left_norm, right_norm):
+    THRESHOLD = 0.02
+    if left_norm < THRESHOLD and right_norm < THRESHOLD:
         return "kemungkinan_tunanetra"
-    else:
-        # minimal satu mata bergerak cukup → dianggap normal
-        return "normal"
+    return "normal"
 
 
-# ============================================================
-#  API ENDPOINT: /detect  (METHOD: POST)
-#  - Dihubungkan dengan Flutter
-#  - Alur:
-#     1. Ambil gambar dari request (decode_image)
-#     2. Jalankan extract_pupil untuk deteksi iris & movement
-#     3. Hitung status mata dengan eye_status()
-#     4. Kirim hasil JSON ke Flutter
-# ============================================================
+# =========================
+# API ENDPOINT
+# =========================
+
 @app.route("/detect", methods=["POST"])
 def detect():
-    # decode gambar dari request (file / base64)
+    global last_open_pupil, last_open_status
+
     img = decode_image(request)
-
-    # jika gagal baca gambar
     if img is None:
-        return jsonify({"error": "Gagal membaca gambar"}), 400
+        return jsonify({"error": "Invalid image"}), 400
 
-    # deteksi pupil + movement
-    pupil = extract_pupil(img)
+    result = extract_pupil(img)
+    if result is None:
+        return jsonify({"status": "pupil_not_found"})
 
-    # jika gagal deteksi wajah / iris
-    if pupil is None:
+    pupil = result["pupil"]
+    any_closed = result["any_closed"]
+    eye_state = result["eye_state"]
+
+    # -------------------------
+    # Kalau salah satu mata tertutup:
+    # status = closed
+    # hasil pupil & movement HOLD dari data terakhir mata terbuka
+    # -------------------------
+    if any_closed:
+        # kalau sudah pernah ada data mata terbuka, pakai itu (HOLD)
+        if last_open_pupil is not None:
+            pupil_to_send = last_open_pupil
+        else:
+            # kalau belum ada data open (misal frame pertama langsung merem)
+            # kirim data sekarang tapi movement 0 (supaya aman)
+            pupil_to_send = pupil
+
         return jsonify({
-            "status": "pupil_not_found",
-            "message": "Wajah/iris tidak terdeteksi"
+            "status": "closed",
+            "eye_state": eye_state,     # info tambahan (frontend boleh abaikan)
+            "pupil": pupil_to_send,     # HOLD hasil terakhir
+            "held_status": last_open_status  # optional info: status terakhir sebelum closed
         })
 
-    # tentukan status eyes berdasarkan movement pupil kiri & kanan
-    status = eye_status(pupil["left"]["movement"], pupil["right"]["movement"])
+    # -------------------------
+    # Kalau kedua mata terbuka:
+    # hitung status normal / kemungkinan_tunanetra
+    # update HOLD data
+    # -------------------------
+    status = eye_status(
+        pupil["left"]["movement_norm"],
+        pupil["right"]["movement_norm"]
+    )
 
-    # kirim JSON lengkap:
-    #  - status: normal / kemungkinan_tunanetra
-    #  - pupil: data kiri & kanan (center, radius, movement)
+    # simpan sebagai hasil terakhir valid (untuk HOLD saat blink)
+    last_open_pupil = pupil
+    last_open_status = status
+
     return jsonify({
         "status": status,
+        "eye_state": eye_state,   # info tambahan (frontend boleh abaikan)
         "pupil": pupil
     })
 
 
-# ============================================================
-#  ENDPOINT ROOT "/" – hanya untuk mengecek server hidup
-# ============================================================
 @app.route("/")
 def home():
-    return jsonify({"status": "MediaPipe Iris Detector with Movement Tracking OK"})
+    return jsonify({"status": "Backend OK - Improved + Closed/Hold"})
 
 
-# ============================================================
-#  MENJALANKAN SERVER FLASK
-#  host="0.0.0.0" → agar bisa diakses dari device lain di jaringan yang sama
-#  port=5000      → port server
-#  debug=True     → log lebih lengkap (sebaiknya False di produksi)
-# ============================================================
+# =========================
+# RUN SERVER
+# =========================
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

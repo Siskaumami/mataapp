@@ -1,59 +1,80 @@
 import 'dart:async';
+// Timer → untuk menjalankan deteksi otomatis tiap 500 ms
+
 import 'dart:convert';
+// jsonEncode / jsonDecode → kirim & terima data JSON ke backend
 
 import 'package:flutter/foundation.dart';
+// kIsWeb → cek apakah aplikasi dijalankan di Web atau Mobile
+
 import 'package:flutter/material.dart';
+// Material UI Flutter
 
-import 'package:camera/camera.dart';               // untuk kamera HP
-import 'package:http/http.dart' as http;           // untuk kirim foto ke backend
-import 'package:path/path.dart' as path;           // untuk mendapat nama file
-import 'package:mime/mime.dart';                   // mengetahui jenis file
-import 'package:http_parser/http_parser.dart';     // parser multipart upload
-import 'package:fl_chart/fl_chart.dart';           // untuk grafik movement pupil
+import 'package:camera/camera.dart';
+// Plugin kamera → ambil gambar dari kamera HP / webcam
 
-import 'pages/hasil_page.dart';                    // halaman hasil akhir
+import 'package:http/http.dart' as http;
+// HTTP client → kirim gambar ke backend Flask
+
+import 'package:path/path.dart' as path;
+// Ambil nama file dari path gambar
+
+import 'package:mime/mime.dart';
+// Menentukan tipe file (image/jpeg, dll)
+
+import 'package:http_parser/http_parser.dart';
+// Parsing multipart upload (untuk Android/iOS)
+
+import 'package:fl_chart/fl_chart.dart';
+// Library grafik → tampilkan movement pupil
+
+import 'pages/hasil_page.dart';
+// Halaman hasil PMB
 
 
 // =========================================================
-//  FUNGSI MAIN – aplikasi dimulai dari sini
+// MAIN — TITIK AWAL APLIKASI
 // =========================================================
 Future<void> main() async {
+  // Pastikan binding Flutter siap sebelum pakai kamera
   WidgetsFlutterBinding.ensureInitialized();
 
-  // ambil daftar kamera yang tersedia
+  // Ambil daftar kamera yang tersedia di device
   final cameras = await availableCameras();
-  final firstCamera = cameras.first;   // pilih kamera pertama (biasanya depan)
 
-  // jalankan aplikasi
+  // Pilih kamera pertama (biasanya kamera depan)
+  final firstCamera = cameras.first;
+
+  // Jalankan aplikasi
   runApp(MataApp(camera: firstCamera));
 }
 
 
 // =========================================================
-//  ROOT APP – membungkus aplikasi dalam MaterialApp
+// ROOT APP — PEMBUNGKUS APLIKASI
 // =========================================================
 class MataApp extends StatelessWidget {
   final CameraDescription camera;
+
   const MataApp({super.key, required this.camera});
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
-      debugShowCheckedModeBanner: false,
+      debugShowCheckedModeBanner: false, // hilangkan banner debug
       title: 'Eye Screening PMB',
-
-      // halaman utama aplikasi
-      home: MataFormPage(camera: camera),
+      home: MataFormPage(camera: camera), // halaman utama
     );
   }
 }
 
 
 // =========================================================
-//  HALAMAN UTAMA – berisi kamera + deteksi + form
+// HALAMAN UTAMA APLIKASI
 // =========================================================
 class MataFormPage extends StatefulWidget {
   final CameraDescription camera;
+
   const MataFormPage({super.key, required this.camera});
 
   @override
@@ -61,32 +82,52 @@ class MataFormPage extends StatefulWidget {
 }
 
 class _MataFormPageState extends State<MataFormPage> {
-  
-  // controller kamera
+
+  // Controller kamera
   late CameraController _controller;
 
-  // proses inisialisasi kamera
+  // Future untuk nunggu kamera siap
   late Future<void> _initializeControllerFuture;
 
-  Timer? _timer;                   // untuk deteksi otomatis
-  bool _isDetecting = false;       // supaya tidak double deteksi
+  // Timer untuk auto-detect
+  Timer? _timer;
 
-  List<double>? pupilCenter;       // posisi pupil kiri
-  double? pupilRadius;             // radius pupil (opsional)
-  String? hasilDeteksi;            // hasil status dari backend
+  // Flag supaya tidak double request
+  bool _isDetecting = false;
 
-  // =========================================================
-  //  VARIABEL GRAFIK – menampung history pergerakan pupil
-  // =========================================================
-  List<double> movementLeftHistory = [];   // movement pupil kiri
-  List<double> movementRightHistory = [];  // movement pupil kanan
-
-  int maxPoints = 20;                      // tampilkan 20 titik terakhir saja
+  // Teks hasil deteksi dari backend
+  String? hasilDeteksi;
 
 
   // =========================================================
-  //  FORM FIELD – data pendaftar
+  // TITIK PUPIL DI KAMERA (DEMO VISUAL)
   // =========================================================
+
+  bool showPupilOnCamera = false;
+  // true  → tampilkan titik pupil di kamera
+  // false → sembunyikan
+
+  Offset? leftPupilPx;
+  Offset? rightPupilPx;
+  // Posisi pupil dalam pixel (dikirim backend)
+
+
+  // =========================================================
+  // GRAFIK MOVEMENT PUPIL
+  // =========================================================
+
+  List<double> movementLeftHistory = [];
+  List<double> movementRightHistory = [];
+  // Menyimpan history movement untuk grafik
+
+  int maxPoints = 20;
+  // Maksimal titik di grafik supaya tidak kepanjangan
+
+
+  // =========================================================
+  // FORM PMB
+  // =========================================================
+
   final _formKey = GlobalKey<FormState>();
 
   final namaCtrl = TextEditingController();
@@ -95,59 +136,36 @@ class _MataFormPageState extends State<MataFormPage> {
   final pekerjaanCtrl = TextEditingController();
   final waCtrl = TextEditingController();
   final sekolahCtrl = TextEditingController();
-  final tglLahirCtrl = TextEditingController();
-
-  String jenisKelamin = "Perempuan";
-  String prodiDipilih = "Teknik Informatika";
-
-  final List<String> prodiList = [
-    "Teknik Informatika",
-    "Sistem Informasi",
-    "Manajemen",
-    "Akuntansi",
-    "Teknik Elektro",
-    "Hukum",
-  ];
-
-  // ID unik untuk client
-  String clientId = "client_${DateTime.now().millisecondsSinceEpoch}";
 
 
   // =========================================================
-  //  ALAMAT BACKEND – server Flask kamu
+  // ALAMAT BACKEND
   // =========================================================
-  String _getBaseUrl() {
-    return "http://192.168.54.189:5000/"; // ganti sesuai IP backend Yang sedang dijalankan soalnya bisa berubah setiap ganti ip jaringan
-  }
-
-  late String baseUrl;
+  String baseUrl = "http://127.0.0.1:5000/";
 
 
   // =========================================================
-  //  INITSTATE – berjalan pertama kali saat halaman dibuka
+  // INITSTATE — DIJALANKAN SAAT HALAMAN DIBUKA
   // =========================================================
   @override
   void initState() {
     super.initState();
 
-    baseUrl = _getBaseUrl();
-
-    // aktifkan kamera
+    // Inisialisasi kamera
     _controller = CameraController(
       widget.camera,
-      ResolutionPreset.medium,   // kualitas sedang
+      ResolutionPreset.medium, // kualitas sedang (stabil & ringan)
       enableAudio: false,
     );
 
-    // setelah kamera siap → jalankan deteksi otomatis
+    // Tunggu kamera siap, lalu mulai auto-detect
     _initializeControllerFuture = _controller.initialize();
     _initializeControllerFuture.then((_) => _startAutoDetect());
   }
 
-
-  // matikan timer & kamera saat halaman ditutup
   @override
   void dispose() {
+    // Hentikan timer & kamera saat halaman ditutup
     _timer?.cancel();
     _controller.dispose();
     super.dispose();
@@ -155,172 +173,142 @@ class _MataFormPageState extends State<MataFormPage> {
 
 
   // =========================================================
-  //  DETEKSI OTOMATIS SETIAP 3 DETIK
+  // AUTO DETECT — JALAN SETIAP 500 ms
   // =========================================================
   void _startAutoDetect() {
-    _timer = Timer.periodic(Duration(seconds: 3), (_) {
-      if (!_isDetecting) _deteksiMata();
-    });
+    _timer = Timer.periodic(
+      const Duration(milliseconds: 500),
+      (_) {
+        if (!_isDetecting) _deteksiMata();
+      },
+    );
   }
 
 
   // =========================================================
-  //  AMBIL FOTO, KIRIM KE BACKEND, TERIMA HASIL MEDIAPIPE
+  // AMBIL FOTO + KIRIM KE BACKEND
   // =========================================================
   Future<void> _deteksiMata() async {
     if (_isDetecting) return;
-
-    setState(() => _isDetecting = true);
+    _isDetecting = true;
 
     try {
-      // ambil foto dari kamera
+      // Ambil gambar dari kamera
       final XFile picture = await _controller.takePicture();
       final bytes = await picture.readAsBytes();
 
       final uri = Uri.parse("$baseUrl/detect");
       dynamic responseData;
 
-      // -------------------------------------
-      // Mode web → kirim base64
-      // -------------------------------------
+      // ===== MODE WEB =====
       if (kIsWeb) {
         final payload = jsonEncode({
           "image": "data:image/jpeg;base64,${base64Encode(bytes)}",
-          "client_id": clientId,
         });
 
         final response = await http.post(
-          uri, headers: {"Content-Type": "application/json"}, body: payload);
+          uri,
+          headers: {"Content-Type": "application/json"},
+          body: payload,
+        );
 
         responseData = jsonDecode(response.body);
-      }
 
-      // -------------------------------------
-      // Mode Android/iOS → kirim multipart
-      // -------------------------------------
-      else {
+      // ===== MODE ANDROID / IOS =====
+      } else {
         final mime = lookupMimeType(picture.path) ?? "image/jpeg";
 
         final request = http.MultipartRequest("POST", uri);
-        request.files.add(http.MultipartFile.fromBytes(
-          'image', bytes,
-          filename: path.basename(picture.path),
-          contentType: MediaType.parse(mime),
-        ));
-
-        request.fields["client_id"] = clientId;
+        request.files.add(
+          http.MultipartFile.fromBytes(
+            'image',
+            bytes,
+            filename: path.basename(picture.path),
+            contentType: MediaType.parse(mime),
+          ),
+        );
 
         final streamed = await request.send();
         final respStr = await streamed.stream.bytesToString();
-
         responseData = jsonDecode(respStr);
       }
 
-      // jika tidak ada pupil
+      // Jika pupil tidak terdeteksi
       if (responseData["status"] == "pupil_not_found") {
-        hasilDeteksi = "Pupil tidak ditemukan";
-        pupilCenter = null;
-        setState(() {});
+        setState(() {
+          hasilDeteksi = "Pupil tidak ditemukan";
+          leftPupilPx = null;
+          rightPupilPx = null;
+        });
       } else {
-        // jika berhasil → proses datanya
         _prosesHasil(responseData);
       }
 
     } catch (e) {
-      hasilDeteksi = "Error: $e";
-    }
-
-    finally {
-      setState(() => _isDetecting = false);
+      setState(() {
+        hasilDeteksi = "Error: $e";
+      });
+    } finally {
+      _isDetecting = false;
     }
   }
 
 
-
   // =========================================================
-  //  MENERIMA DATA DARI BACKEND DAN MENYIMPAN KE STATE
+  // PROSES DATA DARI BACKEND
   // =========================================================
   void _prosesHasil(dynamic data) {
-    
-    if (data == null || data["pupil"] == null) {
-      hasilDeteksi = "Tidak ditemukan pupil";
-      pupilCenter = null;
-      setState(() {});
-      return;
-    }
 
     final left = data["pupil"]["left"];
     final right = data["pupil"]["right"];
 
-    // posisi pupil pada layar
-    pupilCenter = [
-      (left["center_x"] as num).toDouble(),
-      (left["center_y"] as num).toDouble(),
-    ];
+    // Ambil nilai movement pupil
+    final movementLeft = (left["movement_norm"] as num).toDouble();
+    final movementRight = (right["movement_norm"] as num).toDouble();
 
-    // radius pupil (opsional)
-    pupilRadius = (left["radius"] ?? 0).toDouble();
+    // Ambil posisi pupil untuk overlay kamera
+    leftPupilPx = (left["center_x"] != null && left["center_y"] != null)
+        ? Offset(
+            (left["center_x"] as num).toDouble(),
+            (left["center_y"] as num).toDouble(),
+          )
+        : null;
 
-    // movement kiri & kanan
-    final movementLeft = (left["movement"] as num).toDouble();
-    final movementRight = (right["movement"] as num).toDouble();
+    rightPupilPx = (right["center_x"] != null && right["center_y"] != null)
+        ? Offset(
+            (right["center_x"] as num).toDouble(),
+            (right["center_y"] as num).toDouble(),
+          )
+        : null;
 
-    // simpan movement ke grafik
+    // Simpan ke grafik
     movementLeftHistory.add(movementLeft);
     movementRightHistory.add(movementRight);
 
-    // agar grafik tidak terlalu panjang
-    if (movementLeftHistory.length > maxPoints) movementLeftHistory.removeAt(0);
-    if (movementRightHistory.length > maxPoints) movementRightHistory.removeAt(0);
+    // Batasi jumlah titik grafik
+    if (movementLeftHistory.length > maxPoints) {
+      movementLeftHistory.removeAt(0);
+      movementRightHistory.removeAt(0);
+    }
 
-    // status final dari backend (normal / kemungkinan_tunanetra)
-    final status = data["status"];
-
-    // teks yang muncul pada layar
+    // Teks hasil
     hasilDeteksi =
-        "$status\nMovement L: ${movementLeft.toStringAsFixed(4)} | R: ${movementRight.toStringAsFixed(4)}";
+        "${data["status"]}\nMovement L: ${movementLeft.toStringAsFixed(4)} | R: ${movementRight.toStringAsFixed(4)}";
 
     setState(() {});
   }
 
 
-
   // =========================================================
-  //  MEMBANGKITKAN GRAFIK PERGERAKAN PUPIL
+  // GRAFIK MOVEMENT PUPIL
   // =========================================================
   Widget _buildMovementChart() {
-    return Container(
+    return SizedBox(
       height: 250,
-      padding: EdgeInsets.all(12),
-
-      decoration: BoxDecoration(
-        color: Colors.white, 
-        borderRadius: BorderRadius.circular(12),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withOpacity(0.1),
-            blurRadius: 4,
-            offset: Offset(0, 2),
-          ),
-        ],
-      ),
-
-      // grafik LineChart
       child: LineChart(
         LineChartData(
-          titlesData: FlTitlesData(
-            leftTitles: AxisTitles(
-              sideTitles: SideTitles(showTitles: true, reservedSize: 30),
-            ),
-            bottomTitles: AxisTitles(
-              sideTitles: SideTitles(showTitles: false),
-            ),
-          ),
-
-          // Dua garis: biru = kiri, merah = kanan
+          titlesData: const FlTitlesData(show: false),
           lineBarsData: [
-            
-            // GARIS PUPIL KIRI
             LineChartBarData(
               spots: List.generate(
                 movementLeftHistory.length,
@@ -328,11 +316,9 @@ class _MataFormPageState extends State<MataFormPage> {
               ),
               isCurved: true,
               color: Colors.blue,
-              barWidth: 3,
-              dotData: FlDotData(show: false),
+              barWidth: 2,
+              dotData: const FlDotData(show: false),
             ),
-
-            // GARIS PUPIL KANAN
             LineChartBarData(
               spots: List.generate(
                 movementRightHistory.length,
@@ -340,8 +326,8 @@ class _MataFormPageState extends State<MataFormPage> {
               ),
               isCurved: true,
               color: Colors.red,
-              barWidth: 3,
-              dotData: FlDotData(show: false),
+              barWidth: 2,
+              dotData: const FlDotData(show: false),
             ),
           ],
         ),
@@ -350,84 +336,110 @@ class _MataFormPageState extends State<MataFormPage> {
   }
 
 
+  // =========================================================
+  // CAMERA + OVERLAY TITIK PUPIL
+  // =========================================================
+  Widget _buildCameraWithOverlay() {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final previewSize = _controller.value.previewSize;
+
+        // Kalau kamera belum siap
+        if (previewSize == null) {
+          return CameraPreview(_controller);
+        }
+
+        final boxW = constraints.maxWidth;
+        final boxH = boxW * (previewSize.height / previewSize.width);
+
+        Widget overlayDot(Offset? pupilPx, Color color) {
+          if (!showPupilOnCamera || pupilPx == null) {
+            return const SizedBox.shrink();
+          }
+
+          final dx = (pupilPx.dx / previewSize.width) * boxW;
+          final dy = (pupilPx.dy / previewSize.height) * boxH;
+
+          return Positioned(
+            left: dx - 6,
+            top: dy - 6,
+            child: Container(
+              width: 12,
+              height: 12,
+              decoration: BoxDecoration(
+                color: color,
+                shape: BoxShape.circle,
+              ),
+            ),
+          );
+        }
+
+        return SizedBox(
+          width: boxW,
+          height: boxH,
+          child: Stack(
+            children: [
+              Positioned.fill(child: CameraPreview(_controller)),
+              overlayDot(leftPupilPx, Colors.blue),
+              overlayDot(rightPupilPx, Colors.red),
+            ],
+          ),
+        );
+      },
+    );
+  }
+
 
   // =========================================================
-  //  UI UTAMA – KAMERA, HASIL DETEKSI, GRAFIK, FORM
+  // UI UTAMA
   // =========================================================
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: Color(0xFFE7F3FA),
-
+      backgroundColor: const Color(0xFFE7F3FA),
       body: SafeArea(
         child: SingleChildScrollView(
-          padding: EdgeInsets.all(20),
-
+          padding: const EdgeInsets.all(20),
           child: Column(
             children: [
-
-              // judul
-              Text(
+              const Text(
                 "Screening Mata & Form PMB",
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
 
-              SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-              // kamera
               FutureBuilder(
                 future: _initializeControllerFuture,
-
-                builder: (context, snapshot) {
+                builder: (_, snapshot) {
                   if (snapshot.connectionState == ConnectionState.done) {
-                    
-                    return Stack(
-                      children: [
-
-                        // tampilan kamera
-                        CameraPreview(_controller),
-
-                        // titik merah di pupil
-                        if (pupilCenter != null)
-                          Positioned(
-                            left: pupilCenter![0] * 0.5,
-                            top: pupilCenter![1] * 0.5,
-
-                            child: Container(
-                              width: 12,
-                              height: 12,
-                              decoration: BoxDecoration(
-                                color: Colors.red,
-                                shape: BoxShape.circle,
-                              ),
-                            ),
-                          ),
-                      ],
-                    );
+                    return _buildCameraWithOverlay();
                   }
-
-                  return CircularProgressIndicator();
+                  return const CircularProgressIndicator();
                 },
               ),
 
-              SizedBox(height: 16),
+              const SizedBox(height: 16),
 
-              // hasil deteksi (normal / kemungkinan tunanetra)
               Text(
                 hasilDeteksi ?? "Mendeteksi...",
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.w600),
+                style: const TextStyle(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w600,
+                ),
               ),
 
-              SizedBox(height: 20),
+              // Toggle demo titik pupil
+              SwitchListTile(
+                title: const Text("Tampilkan titik pupil di kamera (demo)"),
+                value: showPupilOnCamera,
+                onChanged: (v) => setState(() => showPupilOnCamera = v),
+              ),
 
-              // grafik movement
-              if (movementLeftHistory.isNotEmpty)
-                _buildMovementChart(),
-
-              SizedBox(height: 20),
-
-              // form pendaftar
+              const SizedBox(height: 20),
+              if (movementLeftHistory.isNotEmpty) _buildMovementChart(),
+              const SizedBox(height: 20),
               _buildForm(),
             ],
           ),
@@ -437,27 +449,21 @@ class _MataFormPageState extends State<MataFormPage> {
   }
 
 
-
   // =========================================================
-  //  FORM PMB
+  // FORM PMB
   // =========================================================
   Widget _buildForm() {
     return Form(
       key: _formKey,
-
       child: Column(
         children: [
-
           _field("Nama Lengkap", namaCtrl),
           _field("Email", emailCtrl),
-          _field("Alamat Lengkap", alamatCtrl),
+          _field("Alamat", alamatCtrl),
           _field("Pekerjaan", pekerjaanCtrl),
           _field("No WA", waCtrl),
           _field("Asal Sekolah", sekolahCtrl),
-
-          SizedBox(height: 16),
-
-          // tombol kirim ke halaman hasil
+          const SizedBox(height: 16),
           ElevatedButton(
             onPressed: () {
               if (_formKey.currentState!.validate()) {
@@ -471,39 +477,33 @@ class _MataFormPageState extends State<MataFormPage> {
                       pekerjaan: pekerjaanCtrl.text,
                       wa: waCtrl.text,
                       sekolah: sekolahCtrl.text,
-                      tglLahir: tglLahirCtrl.text,
-                      jenisKelamin: jenisKelamin,
-                      prodi: prodiDipilih,
+                      tglLahir: "",
+                      jenisKelamin: "Perempuan",
+                      prodi: "Teknik Informatika",
                       hasilDeteksi: hasilDeteksi ?? "-",
                     ),
                   ),
                 );
               }
             },
-            child: Text("Kirim"),
+            child: const Text("Kirim"),
           ),
         ],
       ),
     );
   }
 
-
-
-  // input field form
   Widget _field(String label, TextEditingController c) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(fontWeight: FontWeight.bold)),
-
+        Text(label, style: const TextStyle(fontWeight: FontWeight.bold)),
         TextFormField(
           controller: c,
           validator: (v) => v == null || v.isEmpty ? "Harus diisi" : null,
         ),
-
-        SizedBox(height: 10),
+        const SizedBox(height: 10),
       ],
     );
   }
-
 }
