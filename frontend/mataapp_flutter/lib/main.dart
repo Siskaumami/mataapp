@@ -31,9 +31,9 @@ import 'package:fl_chart/fl_chart.dart';
 import 'pages/hasil_page.dart';
 // Halaman hasil PMB
 
-
 // =========================================================
 // MAIN — TITIK AWAL APLIKASI
+// (PERBAIKAN HANYA DI BAGIAN KAMERA: pilih kamera depan)
 // =========================================================
 Future<void> main() async {
   // Pastikan binding Flutter siap sebelum pakai kamera
@@ -42,13 +42,20 @@ Future<void> main() async {
   // Ambil daftar kamera yang tersedia di device
   final cameras = await availableCameras();
 
-  // Pilih kamera pertama (biasanya kamera depan)
-  final firstCamera = cameras.first;
+  // =========================================================
+  // PERBAIKAN KAMERA:
+  // - Jangan pakai cameras.first (kadang itu kamera belakang)
+  // - Pilih kamera depan berdasarkan lensDirection
+  // - Kalau tidak ketemu (device aneh), fallback ke camera pertama
+  // =========================================================
+  final CameraDescription selectedCamera = cameras.firstWhere(
+    (c) => c.lensDirection == CameraLensDirection.front,
+    orElse: () => cameras.first,
+  );
 
   // Jalankan aplikasi
-  runApp(MataApp(camera: firstCamera));
+  runApp(MataApp(camera: selectedCamera));
 }
-
 
 // =========================================================
 // ROOT APP — PEMBUNGKUS APLIKASI
@@ -68,7 +75,6 @@ class MataApp extends StatelessWidget {
   }
 }
 
-
 // =========================================================
 // HALAMAN UTAMA APLIKASI
 // =========================================================
@@ -82,7 +88,6 @@ class MataFormPage extends StatefulWidget {
 }
 
 class _MataFormPageState extends State<MataFormPage> {
-
   // Controller kamera
   late CameraController _controller;
 
@@ -98,7 +103,6 @@ class _MataFormPageState extends State<MataFormPage> {
   // Teks hasil deteksi dari backend
   String? hasilDeteksi;
 
-
   // =========================================================
   // TITIK PUPIL DI KAMERA (DEMO VISUAL)
   // =========================================================
@@ -111,7 +115,6 @@ class _MataFormPageState extends State<MataFormPage> {
   Offset? rightPupilPx;
   // Posisi pupil dalam pixel (dikirim backend)
 
-
   // =========================================================
   // GRAFIK MOVEMENT PUPIL
   // =========================================================
@@ -122,7 +125,6 @@ class _MataFormPageState extends State<MataFormPage> {
 
   int maxPoints = 20;
   // Maksimal titik di grafik supaya tidak kepanjangan
-
 
   // =========================================================
   // FORM PMB
@@ -137,12 +139,10 @@ class _MataFormPageState extends State<MataFormPage> {
   final waCtrl = TextEditingController();
   final sekolahCtrl = TextEditingController();
 
-
   // =========================================================
   // ALAMAT BACKEND
   // =========================================================
-  String baseUrl = "http://127.0.0.1:5000/";
-
+  String baseUrl = "http://192.168.0.107:5000/";
 
   // =========================================================
   // INITSTATE — DIJALANKAN SAAT HALAMAN DIBUKA
@@ -171,7 +171,6 @@ class _MataFormPageState extends State<MataFormPage> {
     super.dispose();
   }
 
-
   // =========================================================
   // AUTO DETECT — JALAN SETIAP 500 ms
   // =========================================================
@@ -183,7 +182,6 @@ class _MataFormPageState extends State<MataFormPage> {
       },
     );
   }
-
 
   // =========================================================
   // AMBIL FOTO + KIRIM KE BACKEND
@@ -214,7 +212,7 @@ class _MataFormPageState extends State<MataFormPage> {
 
         responseData = jsonDecode(response.body);
 
-      // ===== MODE ANDROID / IOS =====
+        // ===== MODE ANDROID / IOS =====
       } else {
         final mime = lookupMimeType(picture.path) ?? "image/jpeg";
 
@@ -243,7 +241,6 @@ class _MataFormPageState extends State<MataFormPage> {
       } else {
         _prosesHasil(responseData);
       }
-
     } catch (e) {
       setState(() {
         hasilDeteksi = "Error: $e";
@@ -253,12 +250,10 @@ class _MataFormPageState extends State<MataFormPage> {
     }
   }
 
-
   // =========================================================
   // PROSES DATA DARI BACKEND
   // =========================================================
   void _prosesHasil(dynamic data) {
-
     final left = data["pupil"]["left"];
     final right = data["pupil"]["right"];
 
@@ -298,7 +293,6 @@ class _MataFormPageState extends State<MataFormPage> {
     setState(() {});
   }
 
-
   // =========================================================
   // GRAFIK MOVEMENT PUPIL
   // =========================================================
@@ -334,7 +328,6 @@ class _MataFormPageState extends State<MataFormPage> {
       ),
     );
   }
-
 
   // =========================================================
   // CAMERA + OVERLAY TITIK PUPIL
@@ -389,7 +382,6 @@ class _MataFormPageState extends State<MataFormPage> {
     );
   }
 
-
   // =========================================================
   // UI UTAMA
   // =========================================================
@@ -406,9 +398,7 @@ class _MataFormPageState extends State<MataFormPage> {
                 "Screening Mata & Form PMB",
                 style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold),
               ),
-
               const SizedBox(height: 16),
-
               FutureBuilder(
                 future: _initializeControllerFuture,
                 builder: (_, snapshot) {
@@ -418,9 +408,7 @@ class _MataFormPageState extends State<MataFormPage> {
                   return const CircularProgressIndicator();
                 },
               ),
-
               const SizedBox(height: 16),
-
               Text(
                 hasilDeteksi ?? "Mendeteksi...",
                 textAlign: TextAlign.center,
@@ -429,14 +417,12 @@ class _MataFormPageState extends State<MataFormPage> {
                   fontWeight: FontWeight.w600,
                 ),
               ),
-
               // Toggle demo titik pupil
               SwitchListTile(
                 title: const Text("Tampilkan titik pupil di kamera (demo)"),
                 value: showPupilOnCamera,
                 onChanged: (v) => setState(() => showPupilOnCamera = v),
               ),
-
               const SizedBox(height: 20),
               if (movementLeftHistory.isNotEmpty) _buildMovementChart(),
               const SizedBox(height: 20),
@@ -447,7 +433,6 @@ class _MataFormPageState extends State<MataFormPage> {
       ),
     );
   }
-
 
   // =========================================================
   // FORM PMB
