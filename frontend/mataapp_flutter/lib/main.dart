@@ -142,7 +142,7 @@ class _MataFormPageState extends State<MataFormPage> {
   // =========================================================
   // ALAMAT BACKEND
   // =========================================================
-  String baseUrl = "http://192.168.0.107:5000/";
+  String baseUrl = "http://127.0.0.1:5000/";
 
   // =========================================================
   // INITSTATE — DIJALANKAN SAAT HALAMAN DIBUKA
@@ -223,6 +223,7 @@ class _MataFormPageState extends State<MataFormPage> {
             bytes,
             filename: path.basename(picture.path),
             contentType: MediaType.parse(mime),
+            
           ),
         );
 
