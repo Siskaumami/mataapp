@@ -23,6 +23,13 @@ status_counter = Counter()
 blink_log = []
 frame_id = 0
 
+# =========================
+# EXPERIMENT CONFIG
+# =========================
+# True  = pakai HOLD (kondisi "dengan hold")
+# False = tanpa HOLD (kondisi "tanpa hold")
+HOLD_ENABLED = True
+
 
 # =========================
 # MEDIAPIPE FACE MESH
@@ -186,46 +193,31 @@ def extract_pupil(img):
     left_rel = left_center - left_anchor
     right_rel = right_center - right_anchor
 
-    # 3) closed: do not update prev, movement_norm = 0
-    if any_closed:
-        return {
-            "pupil": {
-                "left": {
-                    "center_x": float(left_center[0]),
-                    "center_y": float(left_center[1]),
-                    "movement_norm": 0.0,
-                    "radius": float(left_radius)
-                },
-                "right": {
-                    "center_x": float(right_center[0]),
-                    "center_y": float(right_center[1]),
-                    "movement_norm": 0.0,
-                    "radius": float(right_radius)
-                }
-            },
-            "eye_state": {
-                "left": "closed" if left_is_closed else "open",
-                "right": "closed" if right_is_closed else "open"
-            },
-            "any_closed": True,
-            "ear": {
-                "left": float(left_open_ratio),
-                "right": float(right_open_ratio)
-            }
-        }
-
-    # 4) open: movement + update prev
+    # ===== movement always computed (biar bisa evaluasi tanpa HOLD) =====
     left_move = calculate_movement(prev_left_rel, left_rel)
     right_move = calculate_movement(prev_right_rel, right_rel)
 
     left_eye_width = max(distance(l1, l2), 1e-6)
     right_eye_width = max(distance(r1, r2), 1e-6)
 
-    left_norm = left_move / left_eye_width
-    right_norm = right_move / right_eye_width
+    left_norm_raw = left_move / left_eye_width
+    right_norm_raw = right_move / right_eye_width
 
-    prev_left_rel = left_rel
-    prev_right_rel = right_rel
+    # ===== Behavior depending on HOLD =====
+    if any_closed and HOLD_ENABLED:
+        # HOLD ON:
+        # - movement_norm dipaksa 0
+        # - prev_* TIDAK diupdate (biar stabil)
+        left_norm = 0.0
+        right_norm = 0.0
+    else:
+        # HOLD OFF (atau mata open):
+        # - movement_norm pakai raw
+        # - prev_* diupdate (biar frame-to-frame real)
+        left_norm = float(left_norm_raw)
+        right_norm = float(right_norm_raw)
+        prev_left_rel = left_rel
+        prev_right_rel = right_rel
 
     return {
         "pupil": {
@@ -242,8 +234,11 @@ def extract_pupil(img):
                 "radius": float(right_radius)
             }
         },
-        "eye_state": {"left": "open", "right": "open"},
-        "any_closed": False,
+        "eye_state": {
+            "left": "closed" if left_is_closed else "open",
+            "right": "closed" if right_is_closed else "open"
+        },
+        "any_closed": bool(any_closed),
         "ear": {
             "left": float(left_open_ratio),
             "right": float(right_open_ratio)
@@ -290,20 +285,34 @@ def detect():
     eye_state = result["eye_state"]
     ear = result.get("ear")
 
-    # closed + HOLD
+    # compute status only if NOT closed
     if any_closed:
         status_counter["closed"] += 1
+        status = "closed"
+    else:
+        status = eye_status(
+            pupil["left"]["movement_norm"],
+            pupil["right"]["movement_norm"]
+        )
+        status_counter[status] += 1
 
-        frame_id += 1
-        blink_log.append({
-            "frame_id": frame_id,
-            "t_ms": int(time.time() * 1000),
-            "status": "closed",
-            "any_closed": True,
-            "ear_left": ear["left"] if ear else None,
-            "ear_right": ear["right"] if ear else None
-        })
+    # ===== logging (PENTING: simpan movement untuk tabel 4) =====
+    frame_id += 1
+    blink_log.append({
+        "frame_id": frame_id,
+        "t_ms": int(time.time() * 1000),
+        "status": status,
+        "any_closed": bool(any_closed),
+        "ear_left": ear["left"] if ear else None,
+        "ear_right": ear["right"] if ear else None,
+        "movement_left": float(pupil["left"]["movement_norm"]),
+        "movement_right": float(pupil["right"]["movement_norm"]),
+        "hold_enabled": bool(HOLD_ENABLED),
+    })
 
+    # ===== response behavior: HOLD or NOT =====
+    if any_closed and HOLD_ENABLED:
+        # closed + HOLD
         if last_open_pupil is not None:
             pupil_to_send = last_open_pupil
         else:
@@ -314,35 +323,22 @@ def detect():
             "eye_state": eye_state,
             "pupil": pupil_to_send,
             "held_status": last_open_status,
-            "ear": ear
+            "ear": ear,
+            "hold_enabled": True
         })
 
-    # open: compute status
-    status = eye_status(
-        pupil["left"]["movement_norm"],
-        pupil["right"]["movement_norm"]
-    )
-
-    status_counter[status] += 1
-
-    frame_id += 1
-    blink_log.append({
-        "frame_id": frame_id,
-        "t_ms": int(time.time() * 1000),
-        "status": status,
-        "any_closed": False,
-        "ear_left": ear["left"] if ear else None,
-        "ear_right": ear["right"] if ear else None
-    })
-
-    last_open_pupil = pupil
-    last_open_status = status
+    # NOT closed OR HOLD OFF:
+    # update last_open only when mata open
+    if not any_closed:
+        last_open_pupil = pupil
+        last_open_status = status
 
     return jsonify({
         "status": status,
         "eye_state": eye_state,
         "pupil": pupil,
-        "ear": ear
+        "ear": ear,
+        "hold_enabled": bool(HOLD_ENABLED)
     })
 
 
