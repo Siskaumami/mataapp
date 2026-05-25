@@ -142,7 +142,8 @@ class _MataFormPageState extends State<MataFormPage> {
   // =========================================================
   // ALAMAT BACKEND
   // =========================================================
-  String baseUrl = "http://127.0.0.1:5000/";
+  // Change this line in lib/main.dart
+String baseUrl = "http://127.0.0.1:5000";
 
   // =========================================================
   // INITSTATE — DIJALANKAN SAAT HALAMAN DIBUKA
