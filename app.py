@@ -7,7 +7,6 @@ import numpy as np
 import base64
 import mediapipe as mp
 import time
-import tensorflow as tf  # <-- LIBRARY AI BARU
 
 app = Flask(__name__)
 CORS(app)
@@ -17,6 +16,11 @@ status_counter = Counter()
 # log eksperimen (1 entry per request /detect)
 blink_log = []
 frame_id = 0
+
+# =========================
+# EXPERIMENT CONFIG
+# =========================
+RETINEX_ENABLED = True # True = pakai pra-pemrosesan RBFA (Retinex-Based Fast Algorithm) # Ubah False untuk tanpa Retinex
 
 mp_face_mesh = mp.solutions.face_mesh.FaceMesh(
     max_num_faces=1,
@@ -41,46 +45,23 @@ prev_right_rel = None
 last_open_pupil = None
 last_open_status = None
 
-# ====================================================================
-# INISIALISASI OTAK AI (TENSORFLOW LITE)
-# Pastikan file "model_wajah.tflite" ada di folder yang sama!
-# ====================================================================
-try:
-    interpreter = tf.lite.Interpreter(model_path="model_wajah.tflite")
-    interpreter.allocate_tensors()
-    input_details = interpreter.get_input_details()
-    output_details = interpreter.get_output_details()
-    TFLITE_READY = True
-except Exception as e:
-    print(f"WARNING: Gagal memuat model_wajah.tflite! Error: {e}")
-    TFLITE_READY = False
 
-def recognize_face(img):
-    if not TFLITE_READY:
-        return -1, 0.0
+def enhance_image_rbfa(img, sigma=50):
+    """
+    Mengaplikasikan Retinex-Based Fast Algorithm (RBFA) pada gambar 
+    untuk menormalkan pencahayaan dan memperjelas kontras mata.
+    """
+    hsv = cv2.cvtColor(img, cv2.COLOR_BGR2HSV)
+    h, s, v = cv2.split(hsv)
     
-    try:
-        # Resize gambar sesuai ukuran training di Colab (128x128)
-        img_resized = cv2.resize(img, (128, 128))
-        img_rgb = cv2.cvtColor(img_resized, cv2.COLOR_BGR2RGB)
-        
-        # Siapkan format datanya (float32)
-        input_data = np.expand_dims(img_rgb, axis=0).astype(np.float32)
-        
-        # Suruh AI menebak wajahnya
-        interpreter.set_tensor(input_details[0]['index'], input_data)
-        interpreter.invoke()
-        output_data = interpreter.get_tensor(output_details[0]['index'])
-        
-        # Ambil index dengan tingkat keyakinan tertinggi
-        predicted_index = np.argmax(output_data[0])
-        confidence = float(np.max(output_data[0]))
-        
-        return int(predicted_index), confidence
-    except Exception as e:
-        print(f"Error deteksi wajah: {e}")
-        return -1, 0.0
-# ====================================================================
+    v_float = np.float32(v) + 1.0
+    illumination = cv2.GaussianBlur(v_float, (0, 0), sigma)
+    retinex = cv2.log(v_float) - cv2.log(illumination)
+    v_enhanced = cv2.normalize(retinex, None, 0, 255, cv2.NORM_MINMAX)
+    
+    hsv_enhanced = cv2.merge([h, s, np.uint8(v_enhanced)])
+    return cv2.cvtColor(hsv_enhanced, cv2.COLOR_HSV2BGR)
+
 
 def decode_image(req):
     if "image" in req.files:
@@ -99,19 +80,24 @@ def decode_image(req):
 
     return None
 
+
 def to_px(lm, idx, w, h):
     return np.array([lm[idx].x * w, lm[idx].y * h], dtype=np.float32)
+
 
 def midpoint(a, b):
     return (a + b) / 2.0
 
+
 def distance(a, b):
     return float(np.linalg.norm(a - b))
+
 
 def calculate_movement(prev, now):
     if prev is None:
         return 0.0
     return distance(prev, now)
+
 
 def eye_openness_ratio(lm, w, h, corners, lid_points):
     c1 = to_px(lm, corners[0], w, h)
@@ -123,8 +109,13 @@ def eye_openness_ratio(lm, w, h, corners, lid_points):
     vertical = distance(top, bottom)
     return float(vertical / horizontal)
 
+
 def extract_pupil(img):
     global prev_left_rel, prev_right_rel
+
+    # [BARU] Terapkan RBFA jika diaktifkan sebelum deteksi MediaPipe
+    if RETINEX_ENABLED:
+        img = enhance_image_rbfa(img, sigma=50)
 
     h, w = img.shape[:2]
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -223,11 +214,13 @@ def extract_pupil(img):
         }
     }
 
+
 def eye_status(left_norm, right_norm):
     THRESHOLD = 0.02
     if left_norm < THRESHOLD and right_norm < THRESHOLD:
         return "kemungkinan_tunanetra"
     return "normal"
+
 
 @app.route("/detect", methods=["POST"])
 def detect():
@@ -237,11 +230,7 @@ def detect():
     if img is None:
         return jsonify({"error": "Invalid image"}), 400
 
-    # 1. Jalankan deteksi pupil (kode asli lu)
     result = extract_pupil(img)
-    
-    # 2. JALANKAN DETEKSI WAJAH (TAMBAHAN AI)
-    face_id, face_confidence = recognize_face(img)
 
     if result is None:
         status_counter["pupil_not_found"] += 1
@@ -251,11 +240,7 @@ def detect():
             "t_ms": int(time.time() * 1000),
             "status": "pupil_not_found"
         })
-        return jsonify({
-            "status": "pupil_not_found",
-            "face_id_terdeteksi": face_id,
-            "face_confidence": face_confidence
-        })
+        return jsonify({"status": "pupil_not_found"})
 
     pupil = result["pupil"]
     any_closed = result["any_closed"]
@@ -284,9 +269,7 @@ def detect():
             "pupil": pupil_to_send,
             "held_status": last_open_status,
             "ear": ear,
-            "geom": geom,
-            "face_id_terdeteksi": face_id,
-            "face_confidence": face_confidence
+            "geom": geom
         })
 
     status = eye_status(pupil["left"]["movement_norm"], pupil["right"]["movement_norm"])
@@ -311,15 +294,15 @@ def detect():
         "eye_state": eye_state,
         "pupil": pupil,
         "ear": ear,
-        "geom": geom,
-        "face_id_terdeteksi": face_id,
-        "face_confidence": face_confidence
+        "geom": geom
     })
+
 
 @app.route("/stats", methods=["GET"])
 def stats():
     total = sum(status_counter.values())
     return jsonify({"counter": dict(status_counter), "total_requests": total})
+
 
 @app.route("/reset_experiment", methods=["POST"])
 def reset_experiment():
@@ -333,23 +316,28 @@ def reset_experiment():
     last_open_status = None
     return jsonify({"ok": True})
 
+
 # OPTIONAL: biar gak 404 kalau kamu kebiasaan pakai /reset_stats
 @app.route("/reset_stats", methods=["POST"])
 def reset_stats():
     status_counter.clear()
     return jsonify({"ok": True, "counter": dict(status_counter)})
 
+
 @app.route("/export_blink_log", methods=["GET"])
 def export_blink_log():
     return jsonify({"n": len(blink_log), "data": blink_log})
+
 
 @app.route("/", methods=["GET"])
 def home():
     return jsonify({"status": "Backend OK - Counter Enabled"})
 
+
 @app.route("/favicon.ico")
 def favicon():
     return ("", 204)
+
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)

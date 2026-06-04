@@ -1,0 +1,9 @@
+{
+  "counter": {
+    "closed": 1,
+    "kemungkinan_tunanetra": 8,
+    "normal": 89,
+    "pupil_not_found": 2
+  },
+  "total_requests": 100
+}
