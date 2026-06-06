@@ -18,12 +18,13 @@ CORS(app)
 # EXPERIMENT CONFIG
 # =========================
 # Pilihan:
-# "none"    = tanpa preprocessing
-# "retinex" = Retinex-Based Fast Algorithm
-# "mclahe"  = Multiscale CLAHE / histogram excess-distribution
-# "sci"     = Self-Calibrated Illumination sederhana / SCI-inspired
-# "iagc"    = Illumination-Aware Gamma Correction sederhana / IAGC-inspired
-ENHANCEMENT_METHOD = "iagc"
+# "none"       = tanpa preprocessing
+# "retinex"    = Retinex-Based Fast Algorithm
+# "mclahe"     = Multiscale CLAHE / histogram excess-distribution
+# "sci"        = Self-Calibrated Illumination sederhana / SCI-inspired
+# "iagc"       = Illumination-Aware Gamma Correction sederhana / IAGC-inspired
+# "zerodidce"  = Zero-DiDCE sederhana / Zero-DCE-inspired
+ENHANCEMENT_METHOD = "zerodidce"
 
 
 # =========================
@@ -202,10 +203,6 @@ def enhance_image_iagc(img):
     - Menggunakan kanal luminance untuk membaca kondisi pencahayaan.
     - Gamma ditentukan secara adaptif berdasarkan tingkat gelap/terang citra.
     - Area gelap diperbaiki tanpa membuat area terang terlalu overexposed.
-
-    Catatan:
-    Ini implementasi eksperimental berbasis prinsip IAGC,
-    bukan reproduksi penuh model deep learning IAGC asli.
     """
 
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -251,6 +248,84 @@ def enhance_image_iagc(img):
     return result
 
 
+def enhance_image_zerodidce(img):
+    """
+    Zero-DiDCE sederhana / Zero-DCE-inspired.
+
+    Konsep:
+    - Menggunakan pendekatan curve enhancement seperti Zero-DCE.
+    - Citra asli digunakan untuk memperbaiki area gelap.
+    - Citra invers digunakan sebagai pendekatan dual-illumination.
+    - Hasil akhir diblend agar citra tidak terlalu over-enhanced.
+
+    Catatan:
+    Ini implementasi eksperimental berbasis prinsip Zero-DiDCE,
+    bukan reproduksi penuh model deep learning Zero-DiDCE asli.
+    """
+
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    luminance = (
+        0.299 * rgb[:, :, 0] +
+        0.587 * rgb[:, :, 1] +
+        0.114 * rgb[:, :, 2]
+    )
+
+    mean_l = np.mean(luminance)
+
+    if mean_l < 0.25:
+        iterations = 8
+        alpha_value = 0.65
+    elif mean_l < 0.45:
+        iterations = 6
+        alpha_value = 0.55
+    else:
+        iterations = 4
+        alpha_value = 0.40
+
+    alpha_map = alpha_value * (1.0 - luminance)
+    alpha_map = cv2.GaussianBlur(alpha_map, (0, 0), sigmaX=5)
+    alpha_map = np.clip(alpha_map, 0.05, 0.80)
+    alpha_map_3 = alpha_map[:, :, np.newaxis]
+
+    enhanced = rgb.copy()
+
+    for _ in range(iterations):
+        enhanced = enhanced + alpha_map_3 * enhanced * (1.0 - enhanced)
+        enhanced = np.clip(enhanced, 0, 1)
+
+    inv_rgb = 1.0 - rgb
+    inv_luminance = 1.0 - luminance
+
+    inv_alpha = 0.35 * inv_luminance
+    inv_alpha = cv2.GaussianBlur(inv_alpha, (0, 0), sigmaX=5)
+    inv_alpha = np.clip(inv_alpha, 0.03, 0.45)
+    inv_alpha_3 = inv_alpha[:, :, np.newaxis]
+
+    inv_enhanced = inv_rgb.copy()
+
+    for _ in range(3):
+        inv_enhanced = inv_enhanced + inv_alpha_3 * inv_enhanced * (1.0 - inv_enhanced)
+        inv_enhanced = np.clip(inv_enhanced, 0, 1)
+
+    dual_result = 1.0 - inv_enhanced
+
+    dark_weight = 1.0 - luminance
+    dark_weight = cv2.GaussianBlur(dark_weight, (0, 0), sigmaX=7)
+    dark_weight = np.clip(dark_weight, 0.25, 0.85)
+    dark_weight_3 = dark_weight[:, :, np.newaxis]
+
+    result = (
+        dark_weight_3 * enhanced +
+        (1.0 - dark_weight_3) * dual_result
+    )
+
+    final = (0.80 * result) + (0.20 * rgb)
+    final = np.clip(final * 255, 0, 255).astype(np.uint8)
+
+    return cv2.cvtColor(final, cv2.COLOR_RGB2BGR)
+
+
 def apply_enhancement(img):
     """
     Memilih metode preprocessing sebelum citra diproses MediaPipe.
@@ -267,6 +342,9 @@ def apply_enhancement(img):
 
     if ENHANCEMENT_METHOD == "iagc":
         return enhance_image_iagc(img)
+
+    if ENHANCEMENT_METHOD == "zerodidce":
+        return enhance_image_zerodidce(img)
 
     return img
 
