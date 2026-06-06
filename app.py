@@ -26,7 +26,8 @@ frame_id = 0
 # "none"    = tanpa preprocessing
 # "retinex" = Retinex-Based Fast Algorithm
 # "mclahe"  = Multiscale CLAHE / histogram excess-distribution
-ENHANCEMENT_METHOD = "mclahe"
+# "sci"     = Self-Calibrated Illumination sederhana / SCI-inspired
+ENHANCEMENT_METHOD = "sci"
 
 
 # =========================
@@ -95,13 +96,13 @@ def enhance_image_mclahe(img):
 
     Konsep:
     - Citra diubah ke LAB.
-    - Peningkatan dilakukan pada kanal L atau luminance.
+    - Peningkatan dilakukan pada kanal L/luminance.
     - CLAHE diterapkan pada beberapa ukuran tile.
     - Hasil dari beberapa skala digabungkan.
     - Citra diblend dengan luminance asli agar tidak terlalu over-enhanced.
 
     Catatan:
-    Ini adalah implementasi eksperimental multiscale CLAHE sebagai pendekatan
+    Ini implementasi eksperimental multiscale CLAHE sebagai pendekatan
     histogram excess-distribution untuk kebutuhan pengujian skripsi.
     """
 
@@ -155,6 +156,62 @@ def enhance_image_mclahe(img):
     return result
 
 
+def enhance_image_sci(img):
+    """
+    Self-Calibrated Illumination sederhana / SCI-inspired.
+
+    Konsep:
+    - Mengestimasi peta iluminasi dari citra.
+    - Area gelap diperbaiki menggunakan koreksi pencahayaan adaptif.
+    - Hasil dikombinasikan kembali agar citra tidak terlalu over-enhanced.
+
+    Catatan:
+    Ini implementasi eksperimental berbasis prinsip SCI,
+    bukan reproduksi penuh model deep learning SCI asli.
+    """
+
+    # Ubah ke RGB float 0-1
+    rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
+
+    # Estimasi illumination map dari channel maksimum
+    illumination = np.max(rgb, axis=2)
+
+    # Haluskan illumination map
+    illumination_blur = cv2.GaussianBlur(
+        illumination,
+        (0, 0),
+        sigmaX=15
+    )
+
+    # Hindari pembagian dengan nol
+    illumination_blur = np.clip(illumination_blur, 0.05, 1.0)
+
+    # Self-calibrated correction
+    corrected = rgb / illumination_blur[:, :, np.newaxis]
+
+    # Normalisasi agar tetap di rentang 0-1
+    corrected = np.clip(corrected, 0, 1)
+
+    # Gamma adaptif berdasarkan rata-rata kecerahan
+    mean_light = np.mean(illumination)
+
+    if mean_light < 0.25:
+        gamma = 0.65
+    elif mean_light < 0.45:
+        gamma = 0.75
+    else:
+        gamma = 0.90
+
+    corrected = np.power(corrected, gamma)
+
+    # Blend dengan citra asli agar hasil tidak terlalu kasar
+    alpha = 0.70
+    result = (alpha * corrected) + ((1 - alpha) * rgb)
+    result = np.clip(result * 255, 0, 255).astype(np.uint8)
+
+    return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+
+
 def apply_enhancement(img):
     """
     Memilih metode preprocessing sebelum citra diproses MediaPipe.
@@ -165,6 +222,9 @@ def apply_enhancement(img):
 
     if ENHANCEMENT_METHOD == "mclahe":
         return enhance_image_mclahe(img)
+
+    if ENHANCEMENT_METHOD == "sci":
+        return enhance_image_sci(img)
 
     return img
 
@@ -179,7 +239,10 @@ def decode_image(req):
 
     if "image" in req.files:
         img_bytes = req.files["image"].read()
-        return cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+        return cv2.imdecode(
+            np.frombuffer(img_bytes, np.uint8),
+            cv2.IMREAD_COLOR
+        )
 
     if req.is_json:
         img64 = req.json.get("image")
@@ -191,7 +254,10 @@ def decode_image(req):
                 encoded = img64
 
             img_bytes = base64.b64decode(encoded)
-            return cv2.imdecode(np.frombuffer(img_bytes, np.uint8), cv2.IMREAD_COLOR)
+            return cv2.imdecode(
+                np.frombuffer(img_bytes, np.uint8),
+                cv2.IMREAD_COLOR
+            )
 
     return None
 
