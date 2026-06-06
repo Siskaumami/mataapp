@@ -25,7 +25,7 @@ KONDISI_FOLDER = {
 # Ganti nama ini sesuai mode uji
 # Kalau app.py RETINEX_ENABLED = True  -> pakai "dengan_retinex"
 # Kalau app.py RETINEX_ENABLED = False -> pakai "tanpa_retinex"
-NAMA_UJI = "dengan_retinex"
+NAMA_UJI =  "mclahe"
 
 OUTPUT_CSV = f"hasil_{NAMA_UJI}.csv"
 OUTPUT_STATS = f"stats_{NAMA_UJI}.json"

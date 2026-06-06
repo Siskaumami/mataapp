@@ -1,0 +1,9 @@
+{
+  "counter": {
+    "kemungkinan_tunanetra": 8,
+    "normal": 89,
+    "pupil_not_found": 3
+  },
+  "enhancement_method": "mclahe",
+  "total_requests": 100
+}
