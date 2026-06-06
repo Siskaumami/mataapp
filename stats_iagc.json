@@ -1,0 +1,9 @@
+{
+  "counter": {
+    "kemungkinan_tunanetra": 9,
+    "normal": 89,
+    "pupil_not_found": 2
+  },
+  "enhancement_method": "iagc",
+  "total_requests": 100
+}

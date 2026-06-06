@@ -2,21 +2,16 @@ from flask import Flask, request, jsonify
 from flask_cors import CORS
 from collections import Counter
 
-import cv2
-import numpy as np
 import base64
-import mediapipe as mp
 import time
+
+import cv2
+import mediapipe as mp
+import numpy as np
 
 
 app = Flask(__name__)
 CORS(app)
-
-status_counter = Counter()
-
-# Log eksperimen, 1 entry per request /detect
-blink_log = []
-frame_id = 0
 
 
 # =========================
@@ -27,7 +22,16 @@ frame_id = 0
 # "retinex" = Retinex-Based Fast Algorithm
 # "mclahe"  = Multiscale CLAHE / histogram excess-distribution
 # "sci"     = Self-Calibrated Illumination sederhana / SCI-inspired
-ENHANCEMENT_METHOD = "sci"
+# "iagc"    = Illumination-Aware Gamma Correction sederhana / IAGC-inspired
+ENHANCEMENT_METHOD = "iagc"
+
+
+# =========================
+# GLOBAL COUNTER & LOG
+# =========================
+status_counter = Counter()
+blink_log = []
+frame_id = 0
 
 
 # =========================
@@ -100,10 +104,6 @@ def enhance_image_mclahe(img):
     - CLAHE diterapkan pada beberapa ukuran tile.
     - Hasil dari beberapa skala digabungkan.
     - Citra diblend dengan luminance asli agar tidak terlalu over-enhanced.
-
-    Catatan:
-    Ini implementasi eksperimental multiscale CLAHE sebagai pendekatan
-    histogram excess-distribution untuk kebutuhan pengujian skripsi.
     """
 
     lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
@@ -111,7 +111,6 @@ def enhance_image_mclahe(img):
 
     mean_l = np.mean(l_channel)
 
-    # Clip limit adaptif berdasarkan kecerahan citra
     if mean_l < 70:
         clip_limit = 3.5
     elif mean_l < 120:
@@ -121,7 +120,6 @@ def enhance_image_mclahe(img):
     else:
         clip_limit = 2.0
 
-    # Beberapa skala tile untuk menangkap kontras global dan lokal
     scales = [
         (4, 4),
         (8, 8),
@@ -138,7 +136,6 @@ def enhance_image_mclahe(img):
         enhanced_l = clahe.apply(l_channel)
         enhanced_layers.append(enhanced_l.astype(np.float32))
 
-    # Penggabungan multiscale
     merged_l = (
         0.30 * enhanced_layers[0] +
         0.45 * enhanced_layers[1] +
@@ -147,7 +144,6 @@ def enhance_image_mclahe(img):
 
     merged_l = np.clip(merged_l, 0, 255).astype(np.uint8)
 
-    # Blend agar hasil tidak terlalu tajam
     final_l = cv2.addWeighted(l_channel, 0.25, merged_l, 0.75, 0)
 
     final_lab = cv2.merge([final_l, a_channel, b_channel])
@@ -160,39 +156,26 @@ def enhance_image_sci(img):
     """
     Self-Calibrated Illumination sederhana / SCI-inspired.
 
-    Konsep:
-    - Mengestimasi peta iluminasi dari citra.
-    - Area gelap diperbaiki menggunakan koreksi pencahayaan adaptif.
-    - Hasil dikombinasikan kembali agar citra tidak terlalu over-enhanced.
-
     Catatan:
     Ini implementasi eksperimental berbasis prinsip SCI,
     bukan reproduksi penuh model deep learning SCI asli.
     """
 
-    # Ubah ke RGB float 0-1
     rgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB).astype(np.float32) / 255.0
 
-    # Estimasi illumination map dari channel maksimum
     illumination = np.max(rgb, axis=2)
 
-    # Haluskan illumination map
     illumination_blur = cv2.GaussianBlur(
         illumination,
         (0, 0),
         sigmaX=15
     )
 
-    # Hindari pembagian dengan nol
     illumination_blur = np.clip(illumination_blur, 0.05, 1.0)
 
-    # Self-calibrated correction
     corrected = rgb / illumination_blur[:, :, np.newaxis]
-
-    # Normalisasi agar tetap di rentang 0-1
     corrected = np.clip(corrected, 0, 1)
 
-    # Gamma adaptif berdasarkan rata-rata kecerahan
     mean_light = np.mean(illumination)
 
     if mean_light < 0.25:
@@ -204,12 +187,68 @@ def enhance_image_sci(img):
 
     corrected = np.power(corrected, gamma)
 
-    # Blend dengan citra asli agar hasil tidak terlalu kasar
     alpha = 0.70
     result = (alpha * corrected) + ((1 - alpha) * rgb)
     result = np.clip(result * 255, 0, 255).astype(np.uint8)
 
     return cv2.cvtColor(result, cv2.COLOR_RGB2BGR)
+
+
+def enhance_image_iagc(img):
+    """
+    Illumination-Aware Gamma Correction sederhana / IAGC-inspired.
+
+    Konsep:
+    - Menggunakan kanal luminance untuk membaca kondisi pencahayaan.
+    - Gamma ditentukan secara adaptif berdasarkan tingkat gelap/terang citra.
+    - Area gelap diperbaiki tanpa membuat area terang terlalu overexposed.
+
+    Catatan:
+    Ini implementasi eksperimental berbasis prinsip IAGC,
+    bukan reproduksi penuh model deep learning IAGC asli.
+    """
+
+    lab = cv2.cvtColor(img, cv2.COLOR_BGR2LAB)
+    l_channel, a_channel, b_channel = cv2.split(lab)
+
+    l_float = l_channel.astype(np.float32) / 255.0
+    mean_l = np.mean(l_float)
+
+    if mean_l < 0.25:
+        gamma = 0.55
+    elif mean_l < 0.40:
+        gamma = 0.65
+    elif mean_l < 0.55:
+        gamma = 0.80
+    else:
+        gamma = 0.95
+
+    enhanced_l = np.power(l_float, gamma)
+
+    illumination_weight = 1.0 - l_float
+    illumination_weight = cv2.GaussianBlur(
+        illumination_weight,
+        (0, 0),
+        sigmaX=7
+    )
+
+    blended_l = (
+        illumination_weight * enhanced_l +
+        (1.0 - illumination_weight) * l_float
+    )
+
+    blended_l = np.clip(blended_l * 255, 0, 255).astype(np.uint8)
+
+    clahe = cv2.createCLAHE(
+        clipLimit=1.5,
+        tileGridSize=(8, 8)
+    )
+    blended_l = clahe.apply(blended_l)
+
+    final_lab = cv2.merge([blended_l, a_channel, b_channel])
+    result = cv2.cvtColor(final_lab, cv2.COLOR_LAB2BGR)
+
+    return result
 
 
 def apply_enhancement(img):
@@ -225,6 +264,9 @@ def apply_enhancement(img):
 
     if ENHANCEMENT_METHOD == "sci":
         return enhance_image_sci(img)
+
+    if ENHANCEMENT_METHOD == "iagc":
+        return enhance_image_iagc(img)
 
     return img
 
@@ -303,7 +345,6 @@ def eye_openness_ratio(lm, w, h, corners, lid_points):
 def extract_pupil(img):
     global prev_left_rel, prev_right_rel
 
-    # Terapkan metode preprocessing sesuai eksperimen
     img = apply_enhancement(img)
 
     h, w = img.shape[:2]
@@ -319,7 +360,6 @@ def extract_pupil(img):
     if len(lm) < 478:
         return None
 
-    # Hitung Eye Aspect Ratio / keterbukaan mata
     left_open_ratio = eye_openness_ratio(
         lm, w, h,
         LEFT_EYE_CORNERS,
@@ -359,7 +399,6 @@ def extract_pupil(img):
         RIGHT_IRIS_RING
     )
 
-    # Eye corners dan anchor
     l1 = to_px(lm, LEFT_EYE_CORNERS[0], w, h)
     l2 = to_px(lm, LEFT_EYE_CORNERS[1], w, h)
 
@@ -372,15 +411,12 @@ def extract_pupil(img):
     left_eye_width = max(distance(l1, l2), 1e-6)
     right_eye_width = max(distance(r1, r2), 1e-6)
 
-    # Posisi relatif pupil dalam piksel
     left_rel_px = left_center - left_anchor
     right_rel_px = right_center - right_anchor
 
-    # Posisi relatif pupil ternormalisasi
     left_rel_norm = left_rel_px / left_eye_width
     right_rel_norm = right_rel_px / right_eye_width
 
-    # Kalau mata tertutup, movement_norm tidak diperbarui
     if any_closed:
         return {
             "pupil": {
@@ -428,7 +464,6 @@ def extract_pupil(img):
             }
         }
 
-    # Kalau mata terbuka, hitung movement_norm
     left_move = calculate_movement(prev_left_rel, left_rel_px)
     right_move = calculate_movement(prev_right_rel, right_rel_px)
 
