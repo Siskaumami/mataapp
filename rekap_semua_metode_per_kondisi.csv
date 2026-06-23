@@ -1,0 +1,13 @@
+Metode,Kondisi Pencahayaan,Total Citra,Status Normal,Gerakan Pupil Minimal,Mata Tertutup,Pupil_not_found,Success Rate
+Tanpa Preprocessing,normal,50,40,10,0,0,100.00%
+Tanpa Preprocessing,low_light,50,44,0,0,6,88.00%
+Retinex,normal,50,43,6,1,0,100.00%
+Retinex,low_light,50,46,2,0,2,96.00%
+Multiscale CLAHE,normal,50,43,7,0,0,100.00%
+Multiscale CLAHE,low_light,50,46,1,0,3,94.00%
+SCI,normal,50,42,7,1,0,100.00%
+SCI,low_light,50,43,1,0,6,88.00%
+IAGC,normal,50,43,7,0,0,100.00%
+IAGC,low_light,50,46,2,0,2,96.00%
+Zero-DiDCE,normal,50,41,9,0,0,100.00%
+Zero-DiDCE,low_light,50,47,1,0,2,96.00%
