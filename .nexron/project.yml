@@ -1,0 +1,16 @@
+{
+  "version": 1,
+  "repository_id": 1092441602,
+  "profile": "generic",
+  "protected_paths": [
+    "docs/continuity/PROJECT_FOUNDATION.md"
+  ],
+  "required_documents": [],
+  "required_checks": [],
+  "alert_levels": [
+    "WARNING",
+    "CRITICAL"
+  ],
+  "stale_days": 30,
+  "deployment_edit_threshold": 3
+}
